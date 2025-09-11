@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -11,6 +11,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [base64Mode, setBase64Mode] = useState<"encode" | "decode">("encode");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleMenuSwitch = (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
@@ -49,6 +50,26 @@ function App() {
     setInputText("");
     setOutputText("");
     setHasError(false);
+  };
+
+  const handleOpenFileClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""; // reset so onChange always fires
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (typeof e.target?.result === "string") {
+        // Set the left-side input container value
+        setInputText(e.target.result);
+      }
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -134,6 +155,16 @@ function App() {
             </button>
             <button onClick={clearText} className="clear-btn">
               Clear
+            </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              style={{ display: "none" }}
+              accept=".json,.xml,application/json,text/xml,application/xml"
+              onChange={handleFileChange}
+            />
+            <button onClick={handleOpenFileClick} style={{ marginRight: 8 }}>
+              Open File
             </button>
           </div>
         </div>
