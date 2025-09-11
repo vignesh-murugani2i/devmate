@@ -1,5 +1,7 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import "./App.css";
 
 type MenuOption = "json" | "xml" | "jwt" | "base64" | "json-summary";
@@ -11,7 +13,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [base64Mode, setBase64Mode] = useState<"encode" | "decode">("encode");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileProgress, setFileProgress] = useState<number | null>(null);
 
   const handleMenuSwitch = (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
@@ -52,24 +54,25 @@ function App() {
     setHasError(false);
   };
 
-  const handleOpenFileClick = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ""; // reset so onChange always fires
-      fileInputRef.current.click();
+  const handleOpenFileClick = async () => {
+    setFileProgress(null);
+    const selected = await open({
+      multiple: false,
+      filters: [
+        { name: 'JSON/XML', extensions: ['json', 'xml'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (!selected || typeof selected !== 'string') return;
+    setFileProgress(0);
+    try {
+      // Tauri does not provide progress for readTextFile, so just show indeterminate
+      const text = await readTextFile(selected);
+      setInputText(text);
+    } catch (e) {
+      // Optionally show error
     }
-  };
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      if (typeof e.target?.result === "string") {
-        // Set the left-side input container value
-        setInputText(e.target.result);
-      }
-    };
-    reader.readAsText(file);
+    setFileProgress(null);
   };
 
   return (
@@ -156,22 +159,51 @@ function App() {
             <button onClick={clearText} className="clear-btn">
               Clear
             </button>
-            <input
-              type="file"
-              ref={fileInputRef}
-              style={{ display: "none" }}
-              accept=".json,.xml,application/json,text/xml,application/xml"
-              onChange={handleFileChange}
-            />
-            <button onClick={handleOpenFileClick} style={{ marginRight: 8 }}>
-              Open File
-            </button>
           </div>
         </div>
-
+        {fileProgress !== null && (
+          <div style={{ width: '100%', margin: '8px 0' }}>
+            <div style={{
+              height: 8,
+              background: '#e0e0e0',
+              borderRadius: 4,
+              overflow: 'hidden',
+              position: 'relative',
+            }}>
+              <div style={{
+                width: fileProgress === 0 ? '100%' : `${fileProgress}%`,
+                height: '100%',
+                background: '#1976d2',
+                transition: 'width 0.2s',
+                opacity: fileProgress === 0 ? 0.5 : 1,
+              }} />
+            </div>
+            <div style={{ fontSize: 12, textAlign: 'right', color: '#1976d2' }}>
+              {fileProgress === 0 ? 'Loading...' : `${fileProgress}%`}
+            </div>
+          </div>
+        )}
         <div className="formatter-container">
           <div className="input-section">
-            <h3>Input</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h3>Input</h3>
+              {(activeMenu === "json" || activeMenu === "xml" || activeMenu === "json-summary") && (
+                <button 
+                  onClick={handleOpenFileClick} 
+                  style={{ 
+                    padding: '6px 12px', 
+                    fontSize: '12px', 
+                    backgroundColor: '#3498db', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '4px', 
+                    cursor: 'pointer' 
+                  }}
+                >
+                  Open File
+                </button>
+              )}
+            </div>
             <textarea
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}

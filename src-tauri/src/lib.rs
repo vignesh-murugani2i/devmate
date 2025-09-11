@@ -1,7 +1,7 @@
-use serde_json;
 use base64;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use serde_json;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -33,10 +33,8 @@ fn format_json(text: &str) -> Result<String, String> {
     //     Err(e) => Err(format!("Invalid JSON: {}", e)),
     // }
     match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(parsed) => {
-            serde_json::to_string_pretty(&parsed)
-                .map_err(|e| format!("Failed to format JSON: {}", e))
-        }
+        Ok(parsed) => serde_json::to_string_pretty(&parsed)
+            .map_err(|e| format!("Failed to format JSON: {}", e)),
         Err(e) => {
             // Get line and column from serde_json::Error
             let line = e.line();
@@ -80,7 +78,7 @@ fn format_xml(text: &str) -> Result<String, String> {
     let mut i = 0;
     let chars: Vec<char> = trimmed.chars().collect();
     let mut last_was_text = false; // Track if the last content added was text
-    
+
     while i < chars.len() {
         if chars[i] == '<' {
             // Find the end of the tag
@@ -88,20 +86,20 @@ fn format_xml(text: &str) -> Result<String, String> {
             while tag_end < chars.len() && chars[tag_end] != '>' {
                 tag_end += 1;
             }
-            
+
             if tag_end >= chars.len() {
                 return Err("Invalid XML: Unclosed tag found".to_string());
             }
-            
+
             // Extract tag content
-            let tag_content: String = chars[i+1..tag_end].iter().collect();
+            let tag_content: String = chars[i + 1..tag_end].iter().collect();
             let is_closing_tag = tag_content.starts_with('/');
             let is_self_closing = tag_content.ends_with('/');
-            
+
             if is_closing_tag {
                 // Always decrease depth for closing tags first
                 depth -= 1;
-                
+
                 // Only add newline and indentation if the last content was NOT text
                 if !last_was_text {
                     formatted.push('\n');
@@ -114,34 +112,38 @@ fn format_xml(text: &str) -> Result<String, String> {
                 if !formatted.is_empty() {
                     formatted.push('\n');
                 }
-                
+
                 formatted.push_str(&"  ".repeat(depth.max(0) as usize));
-                
+
                 // Only increase depth for non-self-closing opening tags
                 if !is_self_closing {
                     depth += 1;
                 }
-                
+
                 // Reset the text flag for new tags
                 last_was_text = false;
             }
-            
+
             // Add the complete tag
             for j in i..=tag_end {
                 formatted.push(chars[j]);
             }
-            
+
             i = tag_end + 1;
         } else if !chars[i].is_whitespace() {
             // Handle text content - collect until next tag
             let text_start = i;
-            
+
             while i < chars.len() && chars[i] != '<' {
                 i += 1;
             }
-            
+
             // Add the text content (trimmed)
-            let text_content: String = chars[text_start..i].iter().collect::<String>().trim().to_string();
+            let text_content: String = chars[text_start..i]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string();
             if !text_content.is_empty() {
                 formatted.push_str(&text_content);
                 last_was_text = true; // Mark that we just added text content
@@ -151,25 +153,25 @@ fn format_xml(text: &str) -> Result<String, String> {
             i += 1;
         }
     }
-    
+
     // Final validation: depth should be 0 if XML is properly balanced
     if depth != 0 {
         return Err("Invalid XML: Unbalanced tags detected".to_string());
     }
-    
+
     Ok(formatted)
 }
 
 fn parse_jwt(token: &str) -> Result<String, String> {
     let token = token.trim();
-    
+
     if token.is_empty() {
         return Err("Empty JWT token".to_string());
     }
 
     // Split JWT token into parts
     let parts: Vec<&str> = token.split('.').collect();
-    
+
     if parts.len() != 3 {
         return Err("Invalid JWT format. Expected 3 parts separated by dots.".to_string());
     }
@@ -200,10 +202,22 @@ fn parse_jwt(token: &str) -> Result<String, String> {
 
     // Add token parts for reference
     let mut token_parts = serde_json::Map::new();
-    token_parts.insert("header".to_string(), serde_json::Value::String(parts[0].to_string()));
-    token_parts.insert("payload".to_string(), serde_json::Value::String(parts[1].to_string()));
-    token_parts.insert("signature".to_string(), serde_json::Value::String(parts[2].to_string()));
-    result.insert("token_parts".to_string(), serde_json::Value::Object(token_parts));
+    token_parts.insert(
+        "header".to_string(),
+        serde_json::Value::String(parts[0].to_string()),
+    );
+    token_parts.insert(
+        "payload".to_string(),
+        serde_json::Value::String(parts[1].to_string()),
+    );
+    token_parts.insert(
+        "signature".to_string(),
+        serde_json::Value::String(parts[2].to_string()),
+    );
+    result.insert(
+        "token_parts".to_string(),
+        serde_json::Value::Object(token_parts),
+    );
 
     // Convert to pretty JSON
     match serde_json::to_string_pretty(&result) {
@@ -254,19 +268,17 @@ fn decode_base64(text: &str) -> Result<String, String> {
         return Err("Empty base64 input".to_string());
     }
     match STANDARD.decode(text) {
-        Ok(decoded_bytes) => {
-            match String::from_utf8(decoded_bytes) {
-                Ok(decoded_string) => Ok(decoded_string),
-                Err(e) => Err(format!("Invalid UTF-8 in decoded data: {}", e)),
-            }
-        }
+        Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+            Ok(decoded_string) => Ok(decoded_string),
+            Err(e) => Err(format!("Invalid UTF-8 in decoded data: {}", e)),
+        },
         Err(e) => Err(format!("Invalid base64 encoding: {}", e)),
     }
 }
 
 fn summarize_json(text: &str) -> Result<String, String> {
     let trimmed = text.trim();
-    
+
     if trimmed.is_empty() {
         return Err("Empty JSON input".to_string());
     }
@@ -279,13 +291,13 @@ fn summarize_json(text: &str) -> Result<String, String> {
 
     // Generate summary
     let summary = generate_json_summary(&parsed_value, "root", 0);
-    
+
     // Format as a readable summary
     let mut result = String::new();
     result.push_str("JSON Structure Summary:\n");
     result.push_str("======================\n\n");
     result.push_str(&summary);
-    
+
     // Add statistics
     let stats = calculate_json_stats(&parsed_value);
     result.push_str("\n\nStatistics:\n");
@@ -301,16 +313,26 @@ fn summarize_json(text: &str) -> Result<String, String> {
 
 fn generate_json_summary(value: &serde_json::Value, key: &str, depth: usize) -> String {
     let indent = "  ".repeat(depth);
-    
+
     match value {
         serde_json::Value::Object(obj) => {
             let mut summary = String::new();
             if depth == 0 {
-                summary.push_str(&format!("{}📁 {} (Object with {} keys)\n", indent, key, obj.len()));
+                summary.push_str(&format!(
+                    "{}📁 {} (Object with {} keys)\n",
+                    indent,
+                    key,
+                    obj.len()
+                ));
             } else {
-                summary.push_str(&format!("{}📁 {}: Object ({} keys)\n", indent, key, obj.len()));
+                summary.push_str(&format!(
+                    "{}📁 {}: Object ({} keys)\n",
+                    indent,
+                    key,
+                    obj.len()
+                ));
             }
-            
+
             for (k, v) in obj.iter() {
                 summary.push_str(&generate_json_summary(v, k, depth + 1));
             }
@@ -318,13 +340,18 @@ fn generate_json_summary(value: &serde_json::Value, key: &str, depth: usize) -> 
         }
         serde_json::Value::Array(arr) => {
             let mut summary = String::new();
-            summary.push_str(&format!("{}📋 {}: Array ({} items)\n", indent, key, arr.len()));
-            
+            summary.push_str(&format!(
+                "{}📋 {}: Array ({} items)\n",
+                indent,
+                key,
+                arr.len()
+            ));
+
             if !arr.is_empty() {
                 // Show type of first element and if all elements are the same type
                 let first_type = get_value_type(&arr[0]);
                 let all_same_type = arr.iter().all(|v| get_value_type(v) == first_type);
-                
+
                 if all_same_type {
                     summary.push_str(&format!("{}   └─ All items are: {}\n", indent, first_type));
                 } else {
@@ -337,7 +364,7 @@ fn generate_json_summary(value: &serde_json::Value, key: &str, depth: usize) -> 
                     summary.push_str(&type_list.join(", "));
                     summary.push('\n');
                 }
-                
+
                 // If it's an array of objects, show the structure of the first object
                 if let serde_json::Value::Object(_) = &arr[0] {
                     summary.push_str(&format!("{}   └─ First item structure:\n", indent));
@@ -352,7 +379,13 @@ fn generate_json_summary(value: &serde_json::Value, key: &str, depth: usize) -> 
             } else {
                 s.clone()
             };
-            format!("{}📝 {}: String ({} chars) - \"{}\"\n", indent, key, s.len(), preview)
+            format!(
+                "{}📝 {}: String ({} chars) - \"{}\"\n",
+                indent,
+                key,
+                s.len(),
+                preview
+            )
         }
         serde_json::Value::Number(n) => {
             format!("{}🔢 {}: Number - {}\n", indent, key, n)
@@ -393,14 +426,14 @@ fn calculate_json_stats(value: &serde_json::Value) -> JsonStats {
         max_depth: 0,
         total_keys: 0,
     };
-    
+
     calculate_stats_recursive(value, &mut stats, 0);
     stats
 }
 
 fn calculate_stats_recursive(value: &serde_json::Value, stats: &mut JsonStats, depth: usize) {
     stats.max_depth = stats.max_depth.max(depth);
-    
+
     match value {
         serde_json::Value::Object(obj) => {
             stats.objects += 1;
@@ -424,6 +457,8 @@ fn calculate_stats_recursive(value: &serde_json::Value, stats: &mut JsonStats, d
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet, format_text])
         .run(tauri::generate_context!())
