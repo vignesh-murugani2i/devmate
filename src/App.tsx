@@ -12,18 +12,12 @@ function App() {
   const [outputText, setOutputText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [base64Mode, setBase64Mode] = useState<"encode" | "decode">("encode");
-  const [fileProgress, setFileProgress] = useState<number | null>(null);
+  const [isFileLoading, setIsFileLoading] = useState(false);
+  const [base64Error, setBase64Error] = useState<string>("");
+  const [isLoadingFromFile, setIsLoadingFromFile] = useState(false);
 
   const handleMenuSwitch = (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
-    setInputText("");
-    setOutputText("");
-    setHasError(false);
-  };
-
-  const handleBase64ModeSwitch = (mode: "encode" | "decode") => {
-    setBase64Mode(mode);
     setInputText("");
     setOutputText("");
     setHasError(false);
@@ -37,7 +31,7 @@ function App() {
     try {
       const formatted = await invoke("format_text", {
         text: inputText,
-        formatType: activeMenu === "base64" ? base64Mode : activeMenu,
+        formatType: activeMenu,
       });
       setOutputText(formatted as string);
     } catch (error) {
@@ -52,10 +46,79 @@ function App() {
     setInputText("");
     setOutputText("");
     setHasError(false);
+    setBase64Error("");
+  };
+
+  const copyToClipboard = async (text: string, side: "input" | "output") => {
+    try {
+      await navigator.clipboard.writeText(text);
+      // You could add a toast notification here if desired
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error);
+    }
+  };
+
+  // Auto Base64 conversion handlers
+  const handleInputChange = async (value: string) => {
+    setInputText(value);
+    
+    // Skip Base64 auto-conversion if we're loading from file
+    if (activeMenu === "base64" && !isLoadingFromFile) {
+      if (value.trim()) {
+        try {
+          // Try to decode the input as Base64
+          const decoded = await invoke("format_text", {
+            text: value,
+            formatType: "decode",
+          });
+          setOutputText(decoded as string);
+          setHasError(false);
+          setBase64Error("");
+        } catch (error) {
+          // If decode fails, show error message
+          setOutputText("");
+          setHasError(true);
+          setBase64Error("Invalid Base64 string");
+        }
+      } else {
+        // Clear output when input is empty
+        setOutputText("");
+        setHasError(false);
+        setBase64Error("");
+      }
+    }
+  };
+
+  const handleOutputChange = async (value: string) => {
+    setOutputText(value);
+    
+    if (activeMenu === "base64") {
+      if (value.trim()) {
+        try {
+          // Encode the output text to Base64
+          const encoded = await invoke("format_text", {
+            text: value,
+            formatType: "encode",
+          });
+          setInputText(encoded as string);
+          setHasError(false);
+          setBase64Error("");
+        } catch (error) {
+          // If encode fails, clear input but don't show error for partial typing
+          setInputText("");
+          setHasError(false);
+          setBase64Error("");
+        }
+      } else {
+        // Clear input when output is empty
+        setInputText("");
+        setHasError(false);
+        setBase64Error("");
+      }
+    }
   };
 
   const handleOpenFileClick = async () => {
-    setFileProgress(null);
     const selected = await open({
       multiple: false,
       filters: [
@@ -64,19 +127,101 @@ function App() {
       ],
     });
     if (!selected || typeof selected !== 'string') return;
-    setFileProgress(0);
+    
+    // Set loading states
+    setIsFileLoading(true);
+    setIsLoadingFromFile(true);
+    
+    // Clear output and errors when loading new file
+    setOutputText("");
+    setHasError(false);
+    setBase64Error("");
+    
     try {
-      // Tauri does not provide progress for readTextFile, so just show indeterminate
       const text = await readTextFile(selected);
       setInputText(text);
     } catch (e) {
       // Optionally show error
+      console.error("Failed to read file:", e);
+    } finally {
+      setIsFileLoading(false);
+      setIsLoadingFromFile(false);
     }
-    setFileProgress(null);
   };
 
   return (
     <div className="app-container">
+      {/* File Loading Overlay */}
+      {isFileLoading && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            width: '60px',
+            height: '60px',
+            border: '4px solid #f3f3f3',
+            borderTop: '4px solid #3498db',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+
+      {/* Format Processing Overlay */}
+      {isLoading && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            width: '60px',
+            height: '60px',
+            border: '4px solid #f3f3f3',
+            borderTop: '4px solid #3498db',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            marginBottom: '16px'
+          }} />
+          <div style={{
+            color: 'white',
+            fontSize: '16px',
+            fontWeight: 500
+          }}>
+            {activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting..."}
+          </div>
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+      
       {/* Sidebar */}
       <div className="sidebar">
         <h2>DevMate</h2>
@@ -127,66 +272,53 @@ function App() {
                 : `${activeMenu.toUpperCase()} Formatter`}
           </h1>
           <div className="action-buttons">
-            {activeMenu === "base64" && (
-              <div className="base64-mode-selector">
-                <label className="radio-option">
-                  <input
-                    type="radio"
-                    name="base64Mode"
-                    value="encode"
-                    checked={base64Mode === "encode"}
-                    onChange={() => handleBase64ModeSwitch("encode")}
-                  />
-                  <span className="radio-label">Encode</span>
-                </label>
-                <label className="radio-option">
-                  <input
-                    type="radio"
-                    name="base64Mode"
-                    value="decode"
-                    checked={base64Mode === "decode"}
-                    onChange={() => handleBase64ModeSwitch("decode")}
-                  />
-                  <span className="radio-label">Decode</span>
-                </label>
-              </div>
+            {activeMenu !== "base64" && (
+              <button onClick={formatText} disabled={isLoading}>
+                {isLoading 
+                  ? (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...") 
+                  : (activeMenu === "jwt" ? "Parse" : activeMenu === "json-summary" ? "Summarize" : "Format")}
+              </button>
             )}
-            <button onClick={formatText} disabled={isLoading}>
-              {isLoading 
-                ? (activeMenu === "jwt" ? "Parsing..." : activeMenu === "base64" ? `${base64Mode === "encode" ? "Encoding" : "Decoding"}...` : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...") 
-                : (activeMenu === "jwt" ? "Parse" : activeMenu === "base64" ? (base64Mode === "encode" ? "Encode" : "Decode") : activeMenu === "json-summary" ? "Summarize" : "Format")}
-            </button>
             <button onClick={clearText} className="clear-btn">
               Clear
             </button>
           </div>
         </div>
-        {fileProgress !== null && (
-          <div style={{ width: '100%', margin: '8px 0' }}>
-            <div style={{
-              height: 8,
-              background: '#e0e0e0',
-              borderRadius: 4,
-              overflow: 'hidden',
-              position: 'relative',
-            }}>
-              <div style={{
-                width: fileProgress === 0 ? '100%' : `${fileProgress}%`,
-                height: '100%',
-                background: '#1976d2',
-                transition: 'width 0.2s',
-                opacity: fileProgress === 0 ? 0.5 : 1,
-              }} />
-            </div>
-            <div style={{ fontSize: 12, textAlign: 'right', color: '#1976d2' }}>
-              {fileProgress === 0 ? 'Loading...' : `${fileProgress}%`}
-            </div>
+        {activeMenu === "base64" && (
+          <div style={{ 
+            background: '#e8f4fd', 
+            border: '1px solid #bee5eb', 
+            borderRadius: '4px', 
+            padding: '8px 12px', 
+            margin: '0 0 16px 0',
+            fontSize: '14px',
+            color: '#0c5460',
+            textAlign: 'center'
+          }}>
+            💡 Type or paste text, and the other side updates automatically.
+          </div>
+        )}
+        {activeMenu === "base64" && base64Error && (
+          <div style={{ 
+            background: '#f8d7da', 
+            border: '1px solid #f5c6cb', 
+            borderRadius: '4px', 
+            padding: '8px 12px', 
+            margin: '0 0 16px 0',
+            fontSize: '14px',
+            color: '#721c24',
+            textAlign: 'center',
+            fontWeight: 500
+          }}>
+            ⚠️ {base64Error}
           </div>
         )}
         <div className="formatter-container">
           <div className="input-section">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <h3>Input</h3>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: '20px' }}>
+              <h3 style={{ margin: 0 }}>
+                {activeMenu === "base64" ? "Encoded Text" : "Input"}
+              </h3>
               {(activeMenu === "json" || activeMenu === "xml" || activeMenu === "json-summary") && (
                 <button 
                   onClick={handleOpenFileClick} 
@@ -197,21 +329,38 @@ function App() {
                     color: 'white', 
                     border: 'none', 
                     borderRadius: '4px', 
-                    cursor: 'pointer' 
+                    cursor: 'pointer'
                   }}
                 >
                   Open File
                 </button>
               )}
+              {inputText && activeMenu === "base64" && (
+                <button 
+                  onClick={() => copyToClipboard(inputText, "input")} 
+                  style={{ 
+                    padding: '4px 8px', 
+                    fontSize: '11px', 
+                    backgroundColor: '#28a745', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '3px', 
+                    cursor: 'pointer'
+                  }}
+                >
+                  📋 Copy
+                </button>
+              )}
+              <div style={{ flex: 1 }}></div>
             </div>
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => activeMenu === "base64" ? handleInputChange(e.target.value) : setInputText(e.target.value)}
               placeholder={
                 activeMenu === "jwt" 
                   ? "Paste your JWT token here..." 
                   : activeMenu === "base64"
-                    ? (base64Mode === "encode" ? "Enter text to encode..." : "Enter base64 text to decode...")
+                    ? "Paste Base64 encoded text here..."
                     : activeMenu === "json-summary"
                       ? "Paste your JSON here to get a summary..."
                       : `Paste your ${activeMenu.toUpperCase()} here...`
@@ -221,23 +370,42 @@ function App() {
           </div>
 
           <div className="output-section">
-            <h3>
-              {activeMenu === "jwt" 
-                ? "Parsed JWT" 
-                : activeMenu === "base64"
-                  ? (base64Mode === "encode" ? "Encoded Base64" : "Decoded Text")
-                  : activeMenu === "json-summary"
-                    ? "JSON Summary"
-                    : "Formatted Output"}
-            </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, minHeight: '28px' }}>
+              <h3 style={{ margin: 0, flex: 1 }}>
+                {activeMenu === "jwt" 
+                  ? "Parsed JWT" 
+                  : activeMenu === "base64"
+                    ? "Decoded Text"
+                    : activeMenu === "json-summary"
+                      ? "JSON Summary"
+                      : "Formatted Output"}
+              </h3>
+              {outputText && (
+                <button 
+                  onClick={() => copyToClipboard(outputText, "output")} 
+                  style={{ 
+                    padding: '4px 8px', 
+                    fontSize: '11px', 
+                    backgroundColor: '#28a745', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '3px', 
+                    cursor: 'pointer'
+                  }}
+                >
+                  📋 Copy
+                </button>
+              )}
+            </div>
             <textarea
               value={outputText}
-              readOnly
+              readOnly={activeMenu !== "base64"}
+              onChange={(e) => activeMenu === "base64" ? handleOutputChange(e.target.value) : undefined}
               placeholder={
                 activeMenu === "jwt" 
                   ? "Parsed JWT will appear here..." 
                   : activeMenu === "base64"
-                    ? (base64Mode === "encode" ? "Encoded base64 will appear here..." : "Decoded text will appear here...")
+                    ? "Enter plain text here to encode..."
                     : activeMenu === "json-summary"
                       ? "JSON summary will appear here..."
                       : "Formatted output will appear here..."

@@ -257,7 +257,7 @@ fn decode_jwt_part(encoded: &str) -> Result<serde_json::Value, String> {
 
 fn encode_base64(text: &str) -> Result<String, String> {
     if text.is_empty() {
-        return Err("Empty input text".to_string());
+        return Ok(String::new()); // Return empty string instead of error
     }
     Ok(STANDARD.encode(text.as_bytes()))
 }
@@ -265,7 +265,7 @@ fn encode_base64(text: &str) -> Result<String, String> {
 fn decode_base64(text: &str) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("Empty base64 input".to_string());
+        return Ok(String::new()); // Return empty string instead of error
     }
     match STANDARD.decode(text) {
         Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
