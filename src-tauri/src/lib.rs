@@ -1,5 +1,7 @@
 use serde_json;
 use base64;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -21,14 +23,43 @@ fn format_text(text: &str, format_type: &str) -> Result<String, String> {
 }
 
 fn format_json(text: &str) -> Result<String, String> {
+    // match serde_json::from_str::<serde_json::Value>(text) {
+    //     Ok(parsed) => {
+    //         match serde_json::to_string_pretty(&parsed) {
+    //             Ok(formatted) => Ok(formatted),
+    //             Err(e) => Err(format!("Failed to format JSON: {}", e)),
+    //         }
+    //     }
+    //     Err(e) => Err(format!("Invalid JSON: {}", e)),
+    // }
     match serde_json::from_str::<serde_json::Value>(text) {
         Ok(parsed) => {
-            match serde_json::to_string_pretty(&parsed) {
-                Ok(formatted) => Ok(formatted),
-                Err(e) => Err(format!("Failed to format JSON: {}", e)),
-            }
+            serde_json::to_string_pretty(&parsed)
+                .map_err(|e| format!("Failed to format JSON: {}", e))
         }
-        Err(e) => Err(format!("Invalid JSON: {}", e)),
+        Err(e) => {
+            // Get line and column from serde_json::Error
+            let line = e.line();
+            let column = e.column();
+
+            let lines: Vec<&str> = text.lines().collect();
+            let error_line = lines.get(line.saturating_sub(1)).unwrap_or(&"");
+
+            let mut marker = String::new();
+            for _ in 0..column {
+                marker.push('-');
+            }
+            marker.push('^');
+
+            Err(format!(
+                "Parse error on line {} column {}:\n{}\n{}\n{}",
+                line,
+                column + 1,
+                error_line,
+                marker,
+                e
+            ))
+        }
     }
 }
 
@@ -192,7 +223,7 @@ fn decode_jwt_part(encoded: &str) -> Result<serde_json::Value, String> {
     let standard_base64 = padded.replace('-', "+").replace('_', "/");
 
     // Decode base64
-    match base64::decode(&standard_base64) {
+    match STANDARD.decode(&standard_base64) {
         Ok(decoded_bytes) => {
             // Convert to string
             match String::from_utf8(decoded_bytes) {
@@ -214,18 +245,15 @@ fn encode_base64(text: &str) -> Result<String, String> {
     if text.is_empty() {
         return Err("Empty input text".to_string());
     }
-
-    Ok(base64::encode(text.as_bytes()))
+    Ok(STANDARD.encode(text.as_bytes()))
 }
 
 fn decode_base64(text: &str) -> Result<String, String> {
     let text = text.trim();
-    
     if text.is_empty() {
         return Err("Empty base64 input".to_string());
     }
-
-    match base64::decode(text) {
+    match STANDARD.decode(text) {
         Ok(decoded_bytes) => {
             match String::from_utf8(decoded_bytes) {
                 Ok(decoded_string) => Ok(decoded_string),
