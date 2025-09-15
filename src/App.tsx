@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState, useEffect } from "react";
 import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
+import { useFormatWorker } from './hooks/useFormatWorker';
+import { EnhancedTextArea } from './components/EnhancedTextArea';
 import "./App.css";
 
 type MenuOption = "json" | "xml" | "jwt" | "base64" | "json-summary";
@@ -16,6 +17,13 @@ function App() {
   const [base64Error, setBase64Error] = useState<string>("");
   const [isLoadingFromFile, setIsLoadingFromFile] = useState(false);
 
+  const { formatText: formatWithWorker, cleanup } = useFormatWorker();
+
+  // Cleanup worker on unmount
+  useEffect(() => {
+    return cleanup;
+  }, [cleanup]);
+
   const handleMenuSwitch = (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
     setInputText("");
@@ -23,24 +31,7 @@ function App() {
     setHasError(false);
   };
 
-  const formatText = async () => {
-    if (!inputText.trim()) return;
-
-    setIsLoading(true);
-    setHasError(false);
-    try {
-      const formatted = await invoke("format_text", {
-        text: inputText,
-        formatType: activeMenu,
-      });
-      setOutputText(formatted as string);
-    } catch (error) {
-      setOutputText(`Error: ${error}`);
-      setHasError(true);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  
 
   const clearText = () => {
     setInputText("");
@@ -67,11 +58,8 @@ function App() {
       if (value.trim()) {
         try {
           // Try to decode the input as Base64
-          const decoded = await invoke("format_text", {
-            text: value,
-            formatType: "decode",
-          });
-          setOutputText(decoded as string);
+          const decoded = await formatWithWorker(value, "decode");
+          setOutputText(decoded);
           setHasError(false);
           setBase64Error("");
         } catch (error) {
@@ -96,11 +84,8 @@ function App() {
       if (value.trim()) {
         try {
           // Encode the output text to Base64
-          const encoded = await invoke("format_text", {
-            text: value,
-            formatType: "encode",
-          });
-          setInputText(encoded as string);
+          const encoded = await formatWithWorker(value, "encode");
+          setInputText(encoded);
           setHasError(false);
           setBase64Error("");
         } catch (error) {
@@ -273,7 +258,24 @@ function App() {
           </h1>
           <div className="action-buttons">
             {activeMenu !== "base64" && (
-              <button onClick={formatText} disabled={isLoading}>
+              <button onClick={async () => {
+                if (!inputText.trim()) return;
+                
+                setIsLoading(true);
+                
+                // Use setTimeout to ensure the loading state is rendered before processing
+                await new Promise(resolve => setTimeout(resolve, 10));
+                
+                try {
+                  const parsed = JSON.parse(inputText);
+                  const formatted = JSON.stringify(parsed, null, 2);
+                  setOutputText(formatted);
+                } catch (error) {
+                  setOutputText(`Error: ${error instanceof Error ? error.message : 'Invalid JSON'}`);
+                } finally {
+                  setIsLoading(false);
+                }
+              }} disabled={isLoading}>
                 {isLoading 
                   ? (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...") 
                   : (activeMenu === "jwt" ? "Parse" : activeMenu === "json-summary" ? "Summarize" : "Format")}
@@ -353,9 +355,9 @@ function App() {
               )}
               <div style={{ flex: 1 }}></div>
             </div>
-            <textarea
+            <EnhancedTextArea
               value={inputText}
-              onChange={(e) => activeMenu === "base64" ? handleInputChange(e.target.value) : setInputText(e.target.value)}
+              onChange={(value) => activeMenu === "base64" ? handleInputChange(value) : setInputText(value)}
               placeholder={
                 activeMenu === "jwt" 
                   ? "Paste your JWT token here..." 
@@ -397,10 +399,10 @@ function App() {
                 </button>
               )}
             </div>
-            <textarea
+            <EnhancedTextArea
               value={outputText}
               readOnly={activeMenu !== "base64"}
-              onChange={(e) => activeMenu === "base64" ? handleOutputChange(e.target.value) : undefined}
+              onChange={(value) => activeMenu === "base64" ? handleOutputChange(value) : undefined}
               placeholder={
                 activeMenu === "jwt" 
                   ? "Parsed JWT will appear here..." 
