@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import ChunkedTextarea from './components/ChunkedTextarea';
@@ -10,7 +11,9 @@ function App() {
   const [activeMenu, setActiveMenu] = useState<MenuOption>("json");
   const [inputText, setInputText] = useState("");
   const [outputText, setOutputText] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [isFileLoading, setIsFileLoading] = useState(false);
   const [base64Error, setBase64Error] = useState<string>("");
   const [isLoadingFromFile, setIsLoadingFromFile] = useState(false);
   const [useChunkedLoading, setUseChunkedLoading] = useState(false);
@@ -20,38 +23,6 @@ function App() {
   const [outputCopied, setOutputCopied] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
-
-  const { formatText: formatWithWorker, cleanup } = useFormatWorker();
-  
-  // Chunked content management
-  const {
-    chunks: inputChunks,
-    isLoading: isLoadingInputChunks,
-    isLoadingChunk: isLoadingInputChunk,
-    currentContentId: inputContentId,
-    loadFileContent,
-    loadMoreChunks: loadMoreInputChunks,
-    clearContent: clearInputContent,
-    getCombinedContent: getInputContent,
-    isAllContentLoaded: isAllInputLoaded
-  } = useChunkedContent();
-
-  const {
-    chunks: outputChunks,
-    isLoading: isLoadingOutputChunks,
-    isLoadingChunk: isLoadingOutputChunk,
-    currentContentId: outputContentId,
-    formatContent,
-    loadMoreChunks: loadMoreOutputChunks,
-    clearContent: clearOutputContent,
-    getCombinedContent: getOutputContent,
-    isAllContentLoaded: isAllOutputLoaded
-  } = useChunkedContent();
-
-  // Cleanup worker on unmount
-  useEffect(() => {
-    return cleanup;
-  }, [cleanup]);
 
   const handleMenuSwitch = async (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
@@ -207,13 +178,16 @@ function App() {
   const handleInputChange = async (value: string) => {
     setInputText(value);
     
-    // Base64 auto-conversion (only in non-chunked mode)
-    if (activeMenu === "base64" && !useChunkedMode) {
+    // Skip Base64 auto-conversion if we're loading from file
+    if (activeMenu === "base64" && !isLoadingFromFile) {
       if (value.trim()) {
         try {
           // Try to decode the input as Base64
-          const decoded = await formatWithWorker(value, "decode");
-          setOutputText(decoded);
+          const decoded = await invoke("format_text", {
+            text: value,
+            formatType: "decode",
+          });
+          setOutputText(decoded as string);
           setHasError(false);
           setBase64Error("");
         } catch (error) {
@@ -238,8 +212,11 @@ function App() {
       if (value.trim()) {
         try {
           // Encode the output text to Base64
-          const encoded = await formatWithWorker(value, "encode");
-          setInputText(encoded);
+          const encoded = await invoke("format_text", {
+            text: value,
+            formatType: "encode",
+          });
+          setInputText(encoded as string);
           setHasError(false);
           setBase64Error("");
         } catch (error) {
@@ -267,12 +244,11 @@ function App() {
     });
     if (!selected || typeof selected !== 'string') return;
     
-    setIsFileOpening(true);
+    // Set loading states
+    setIsFileLoading(true);
+    setIsLoadingFromFile(true);
     
-    // Clear previous content
-    await clearInputContent();
-    await clearOutputContent();
-    setInputText("");
+    // Clear output and errors when loading new file
     setOutputText("");
     setHasError(false);
     setBase64Error("");
@@ -329,7 +305,8 @@ function App() {
       console.error("Failed to read file:", e);
       alert(`Failed to read file: ${e}. The file might be too large for this browser to handle.`);
     } finally {
-      setIsFileOpening(false);
+      setIsFileLoading(false);
+      setIsLoadingFromFile(false);
     }
   };
 
@@ -337,8 +314,39 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* Processing Overlay */}
-      {(isFileOpening || isFormatting || isLoadingInputChunks || isLoadingOutputChunks) && (
+      {/* File Loading Overlay */}
+      {isFileLoading && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            width: '60px',
+            height: '60px',
+            border: '4px solid #f3f3f3',
+            borderTop: '4px solid #3498db',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+
+      {/* Format Processing Overlay */}
+      {isLoading && (
         <div style={{
           position: 'fixed',
           top: 0,
@@ -366,9 +374,7 @@ function App() {
             fontSize: '16px',
             fontWeight: 500
           }}>
-            {isFileOpening 
-              ? "Opening file..." 
-              : (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...")}
+            {activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting..."}
           </div>
           <style>{`
             @keyframes spin {
@@ -430,33 +436,8 @@ function App() {
           </h1>
           <div className="action-buttons">
             {activeMenu !== "base64" && (
-              <button onClick={async () => {
-                // Set loading state immediately
-                setIsFormatting(true);
-                
-                // Force UI update by yielding control to the event loop
-                await new Promise(resolve => setTimeout(resolve, 50));
-                
-                try {
-                  if (useChunkedMode && inputContentId) {
-                    await clearOutputContent();
-                    await formatContent(inputContentId, activeMenu);
-                  } else if (inputText.trim()) {
-                    // Use the format worker with the correct menu type
-                    const formatted = await formatWithWorker(inputText, activeMenu);
-                    setOutputText(formatted);
-                  }
-                } catch (error) {
-                  if (useChunkedMode) {
-                    setHasError(true);
-                  } else {
-                    setOutputText(`Error: ${error instanceof Error ? error.message : 'Invalid input'}`);
-                  }
-                } finally {
-                  setIsFormatting(false);
-                }
-              }} disabled={isFileOpening || isFormatting || isLoadingOutputChunks || (!inputText.trim() && !inputContentId)}>
-                {(isFormatting || isLoadingOutputChunks)
+              <button onClick={formatText} disabled={isLoading}>
+                {isLoading 
                   ? (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...") 
                   : (activeMenu === "jwt" ? "Parse" : activeMenu === "json-summary" ? "Summarize" : "Format")}
               </button>

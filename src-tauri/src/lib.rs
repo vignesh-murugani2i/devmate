@@ -600,7 +600,6 @@ fn read_large_file_streaming(file_path: String, state: State<AppState>) -> Resul
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(ContentStore::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
