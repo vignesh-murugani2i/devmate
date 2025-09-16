@@ -2,6 +2,64 @@ use base64;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri::State;
+use serde::{Deserialize, Serialize};
+
+// Content storage for chunked loading
+#[derive(Debug, Clone)]
+struct ContentStorage {
+    content: String,
+    chunk_size: usize,
+    total_chunks: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ContentChunk {
+    chunk_index: usize,
+    content: String,
+    total_chunks: usize,
+    is_last_chunk: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FileMetadata {
+    total_lines: usize,
+    total_size: usize,
+    total_chunks: usize,
+    chunk_size: usize,
+}
+
+type ContentStore = Mutex<HashMap<String, ContentStorage>>;
+
+impl ContentStorage {
+    fn new(content: String, chunk_size: usize) -> Self {
+        let total_chunks = (content.len() as f64 / chunk_size as f64).ceil() as usize;
+        Self {
+            content,
+            chunk_size,
+            total_chunks,
+        }
+    }
+
+    fn get_chunk(&self, chunk_index: usize) -> Option<ContentChunk> {
+        if chunk_index >= self.total_chunks {
+            return None;
+        }
+
+        let start = chunk_index * self.chunk_size;
+        let end = std::cmp::min(start + self.chunk_size, self.content.len());
+        let chunk_content = self.content[start..end].to_string();
+
+        Some(ContentChunk {
+            chunk_index,
+            content: chunk_content,
+            total_chunks: self.total_chunks,
+            is_last_chunk: chunk_index == self.total_chunks - 1,
+        })
+    }
+}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -454,13 +512,111 @@ fn calculate_stats_recursive(value: &serde_json::Value, stats: &mut JsonStats, d
     }
 }
 
+// Store file content in backend and return metadata
+#[tauri::command]
+fn load_file_content(
+    content: String,
+    content_id: String,
+    chunk_size: Option<usize>,
+    store: State<ContentStore>
+) -> Result<FileMetadata, String> {
+    let chunk_size = chunk_size.unwrap_or(50000); // Default 50KB chunks
+    let content_storage = ContentStorage::new(content.clone(), chunk_size);
+    
+    let metadata = FileMetadata {
+        total_lines: content.lines().count(),
+        total_size: content.len(),
+        total_chunks: content_storage.total_chunks,
+        chunk_size,
+    };
+    
+    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+    store.insert(content_id, content_storage);
+    
+    Ok(metadata)
+}
+
+// Get a specific chunk of content
+#[tauri::command]
+fn get_content_chunk(
+    content_id: String,
+    chunk_index: usize,
+    store: State<ContentStore>
+) -> Result<ContentChunk, String> {
+    let store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+    
+    match store.get(&content_id) {
+        Some(content_storage) => {
+            match content_storage.get_chunk(chunk_index) {
+                Some(chunk) => Ok(chunk),
+                None => Err("Chunk index out of bounds".to_string()),
+            }
+        },
+        None => Err("Content not found".to_string()),
+    }
+}
+
+// Format content and store in backend
+#[tauri::command]
+fn format_and_store_content(
+    content_id: String,
+    formatted_content_id: String,
+    format_type: String,
+    chunk_size: Option<usize>,
+    store: State<ContentStore>
+) -> Result<FileMetadata, String> {
+    let chunk_size = chunk_size.unwrap_or(50000);
+    
+    // Get original content
+    let original_content = {
+        let store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+        match store.get(&content_id) {
+            Some(content_storage) => content_storage.content.clone(),
+            None => return Err("Original content not found".to_string()),
+        }
+    };
+    
+    // Format the content
+    let formatted_content = format_text(&original_content, &format_type)?;
+    
+    // Store formatted content
+    let content_storage = ContentStorage::new(formatted_content.clone(), chunk_size);
+    let metadata = FileMetadata {
+        total_lines: formatted_content.lines().count(),
+        total_size: formatted_content.len(),
+        total_chunks: content_storage.total_chunks,
+        chunk_size,
+    };
+    
+    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+    store.insert(formatted_content_id, content_storage);
+    
+    Ok(metadata)
+}
+
+// Clear content from backend storage
+#[tauri::command]
+fn clear_content(content_id: String, store: State<ContentStore>) -> Result<(), String> {
+    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+    store.remove(&content_id);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ContentStore::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, format_text])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            format_text,
+            load_file_content,
+            get_content_chunk,
+            format_and_store_content,
+            clear_content
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

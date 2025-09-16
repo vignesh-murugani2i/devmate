@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useFormatWorker } from './hooks/useFormatWorker';
+import { useChunkedContent } from './hooks/useChunkedContent';
 import { EnhancedTextArea } from './components/EnhancedTextArea';
+import { ChunkedTextDisplay } from './components/ChunkedTextDisplay';
 import "./App.css";
 
 type MenuOption = "json" | "xml" | "jwt" | "base64" | "json-summary";
@@ -11,36 +13,77 @@ function App() {
   const [activeMenu, setActiveMenu] = useState<MenuOption>("json");
   const [inputText, setInputText] = useState("");
   const [outputText, setOutputText] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [isFileLoading, setIsFileLoading] = useState(false);
   const [base64Error, setBase64Error] = useState<string>("");
-  const [isLoadingFromFile, setIsLoadingFromFile] = useState(false);
+  const [useChunkedMode, setUseChunkedMode] = useState(false);
+  const [isFileOpening, setIsFileOpening] = useState(false);
+  const [isFormatting, setIsFormatting] = useState(false);
 
   const { formatText: formatWithWorker, cleanup } = useFormatWorker();
+  
+  // Chunked content management
+  const {
+    chunks: inputChunks,
+    metadata: inputMetadata,
+    isLoading: isLoadingInputChunks,
+    isLoadingChunk: isLoadingInputChunk,
+    currentContentId: inputContentId,
+    loadFileContent,
+    loadMoreChunks: loadMoreInputChunks,
+    clearContent: clearInputContent,
+    getCombinedContent: getInputContent,
+    isAllContentLoaded: isAllInputLoaded
+  } = useChunkedContent();
+
+  const {
+    chunks: outputChunks,
+    metadata: outputMetadata,
+    isLoading: isLoadingOutputChunks,
+    isLoadingChunk: isLoadingOutputChunk,
+    currentContentId: outputContentId,
+    formatContent,
+    loadMoreChunks: loadMoreOutputChunks,
+    clearContent: clearOutputContent,
+    getCombinedContent: getOutputContent,
+    isAllContentLoaded: isAllOutputLoaded
+  } = useChunkedContent();
 
   // Cleanup worker on unmount
   useEffect(() => {
     return cleanup;
   }, [cleanup]);
 
-  const handleMenuSwitch = (menuOption: MenuOption) => {
+  const handleMenuSwitch = async (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
-    setInputText("");
-    setOutputText("");
-    setHasError(false);
-  };
-
-  
-
-  const clearText = () => {
+    
+    // Clear regular text content
     setInputText("");
     setOutputText("");
     setHasError(false);
     setBase64Error("");
+    
+    // Clear chunked content
+    await clearInputContent();
+    await clearOutputContent();
+    setUseChunkedMode(false);
   };
 
-  const copyToClipboard = async (text: string, side: "input" | "output") => {
+  
+
+  const clearText = async () => {
+    // Clear regular text
+    setInputText("");
+    setOutputText("");
+    setHasError(false);
+    setBase64Error("");
+    
+    // Clear chunked content
+    await clearInputContent();
+    await clearOutputContent();
+    setUseChunkedMode(false);
+  };
+
+  const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       // You could add a toast notification here if desired
@@ -53,8 +96,8 @@ function App() {
   const handleInputChange = async (value: string) => {
     setInputText(value);
     
-    // Skip Base64 auto-conversion if we're loading from file
-    if (activeMenu === "base64" && !isLoadingFromFile) {
+    // Base64 auto-conversion (only in non-chunked mode)
+    if (activeMenu === "base64" && !useChunkedMode) {
       if (value.trim()) {
         try {
           // Try to decode the input as Base64
@@ -113,62 +156,45 @@ function App() {
     });
     if (!selected || typeof selected !== 'string') return;
     
-    // Set loading states
-    setIsFileLoading(true);
-    setIsLoadingFromFile(true);
+    setIsFileOpening(true);
     
-    // Clear output and errors when loading new file
+    // Clear previous content
+    await clearInputContent();
+    await clearOutputContent();
+    setInputText("");
     setOutputText("");
     setHasError(false);
     setBase64Error("");
     
     try {
       const text = await readTextFile(selected);
-      setInputText(text);
+      
+      // Check if content is large enough for chunked mode
+      const isLargeContent = text.length > 100000 || text.split('\n').length > 1000;
+      
+      if (isLargeContent) {
+        // Use chunked mode for large files
+        await loadFileContent(text);
+        setUseChunkedMode(true);
+      } else {
+        // Use regular mode for small files
+        setInputText(text);
+        setUseChunkedMode(false);
+      }
     } catch (e) {
-      // Optionally show error
       console.error("Failed to read file:", e);
+      setHasError(true);
     } finally {
-      setIsFileLoading(false);
-      setIsLoadingFromFile(false);
+      setIsFileOpening(false);
     }
   };
 
+
+
   return (
     <div className="app-container">
-      {/* File Loading Overlay */}
-      {isFileLoading && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 9999
-        }}>
-          <div style={{
-            width: '60px',
-            height: '60px',
-            border: '4px solid #f3f3f3',
-            borderTop: '4px solid #3498db',
-            borderRadius: '50%',
-            animation: 'spin 1s linear infinite'
-          }} />
-          <style>{`
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-          `}</style>
-        </div>
-      )}
-
-      {/* Format Processing Overlay */}
-      {isLoading && (
+      {/* Processing Overlay */}
+      {(isFileOpening || isFormatting || isLoadingInputChunks || isLoadingOutputChunks) && (
         <div style={{
           position: 'fixed',
           top: 0,
@@ -196,7 +222,9 @@ function App() {
             fontSize: '16px',
             fontWeight: 500
           }}>
-            {activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting..."}
+            {isFileOpening 
+              ? "Opening file..." 
+              : (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...")}
           </div>
           <style>{`
             @keyframes spin {
@@ -259,24 +287,32 @@ function App() {
           <div className="action-buttons">
             {activeMenu !== "base64" && (
               <button onClick={async () => {
-                if (!inputText.trim()) return;
+                // Set loading state immediately
+                setIsFormatting(true);
                 
-                setIsLoading(true);
-                
-                // Use setTimeout to ensure the loading state is rendered before processing
-                await new Promise(resolve => setTimeout(resolve, 10));
+                // Force UI update by yielding control to the event loop
+                await new Promise(resolve => setTimeout(resolve, 50));
                 
                 try {
-                  const parsed = JSON.parse(inputText);
-                  const formatted = JSON.stringify(parsed, null, 2);
-                  setOutputText(formatted);
+                  if (useChunkedMode && inputContentId) {
+                    await clearOutputContent();
+                    await formatContent(inputContentId, activeMenu);
+                  } else if (inputText.trim()) {
+                    // Use the format worker with the correct menu type
+                    const formatted = await formatWithWorker(inputText, activeMenu);
+                    setOutputText(formatted);
+                  }
                 } catch (error) {
-                  setOutputText(`Error: ${error instanceof Error ? error.message : 'Invalid JSON'}`);
+                  if (useChunkedMode) {
+                    setHasError(true);
+                  } else {
+                    setOutputText(`Error: ${error instanceof Error ? error.message : 'Invalid input'}`);
+                  }
                 } finally {
-                  setIsLoading(false);
+                  setIsFormatting(false);
                 }
-              }} disabled={isLoading}>
-                {isLoading 
+              }} disabled={isFileOpening || isFormatting || isLoadingOutputChunks || (!inputText.trim() && !inputContentId)}>
+                {(isFormatting || isLoadingOutputChunks)
                   ? (activeMenu === "jwt" ? "Parsing..." : activeMenu === "json-summary" ? "Summarizing..." : "Formatting...") 
                   : (activeMenu === "jwt" ? "Parse" : activeMenu === "json-summary" ? "Summarize" : "Format")}
               </button>
@@ -325,17 +361,18 @@ function App() {
                 <>
                   <button 
                     onClick={handleOpenFileClick} 
+                    disabled={isFileOpening || isFormatting}
                     style={{ 
                       padding: '6px 12px', 
                       fontSize: '12px', 
-                      backgroundColor: '#3498db', 
+                      backgroundColor: (isFileOpening || isFormatting) ? '#95a5a6' : '#3498db', 
                       color: 'white', 
                       border: 'none', 
                       borderRadius: '4px', 
-                      cursor: 'pointer'
+                      cursor: (isFileOpening || isFormatting) ? 'not-allowed' : 'pointer'
                     }}
                   >
-                    📁 Open File
+                    📁 {isFileOpening ? 'Opening...' : 'Open File'}
                   </button>
                   <span style={{
                     fontSize: '11px',
@@ -349,7 +386,7 @@ function App() {
               )}
               {inputText && activeMenu === "base64" && (
                 <button 
-                  onClick={() => copyToClipboard(inputText, "input")} 
+                  onClick={() => copyToClipboard(inputText)} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
@@ -365,20 +402,42 @@ function App() {
               )}
               <div style={{ flex: 1 }}></div>
             </div>
-            <EnhancedTextArea
-              value={inputText}
-              onChange={(value) => activeMenu === "base64" ? handleInputChange(value) : setInputText(value)}
-              placeholder={
-                activeMenu === "jwt" 
-                  ? "Paste your JWT token here..." 
-                  : activeMenu === "base64"
-                    ? "Paste Base64 encoded text here..."
+            {useChunkedMode ? (
+              <ChunkedTextDisplay
+                content={getInputContent()}
+                isLoading={isLoadingInputChunks}
+                isLoadingChunk={isLoadingInputChunk}
+                onLoadMore={() => {
+                  const nextChunkIndex = Math.floor(inputChunks.length);
+                  loadMoreInputChunks(nextChunkIndex, 2); // Load 2 chunks at a time
+                }}
+                isAllLoaded={isAllInputLoaded()}
+                placeholder={
+                  activeMenu === "jwt" 
+                    ? "Large JWT content loaded..." 
                     : activeMenu === "json-summary"
-                      ? "Paste your JSON here to get a summary..."
-                      : `Paste your ${activeMenu.toUpperCase()} here...`
-              }
-              className="text-area"
-            />
+                      ? "Large JSON content loaded..."
+                      : `Large ${activeMenu.toUpperCase()} content loaded...`
+                }
+                className="text-area"
+                readOnly={true}
+              />
+            ) : (
+              <EnhancedTextArea
+                value={inputText}
+                onChange={(value) => activeMenu === "base64" ? handleInputChange(value) : setInputText(value)}
+                placeholder={
+                  activeMenu === "jwt" 
+                    ? "Paste your JWT token here..." 
+                    : activeMenu === "base64"
+                      ? "Paste Base64 encoded text here..."
+                      : activeMenu === "json-summary"
+                        ? "Paste your JSON here to get a summary..."
+                        : `Paste your ${activeMenu.toUpperCase()} here...`
+                }
+                className="text-area"
+              />
+            )}
           </div>
 
           <div className="output-section">
@@ -394,7 +453,7 @@ function App() {
               </h3>
               {outputText && (
                 <button 
-                  onClick={() => copyToClipboard(outputText, "output")} 
+                  onClick={() => copyToClipboard(outputText)} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
@@ -409,21 +468,43 @@ function App() {
                 </button>
               )}
             </div>
-            <EnhancedTextArea
-              value={outputText}
-              readOnly={activeMenu !== "base64"}
-              onChange={(value) => activeMenu === "base64" ? handleOutputChange(value) : undefined}
-              placeholder={
-                activeMenu === "jwt" 
-                  ? "Parsed JWT will appear here..." 
-                  : activeMenu === "base64"
-                    ? "Enter plain text here to encode..."
+            {useChunkedMode && outputContentId ? (
+              <ChunkedTextDisplay
+                content={getOutputContent()}
+                isLoading={isLoadingOutputChunks}
+                isLoadingChunk={isLoadingOutputChunk}
+                onLoadMore={() => {
+                  const nextChunkIndex = Math.floor(outputChunks.length);
+                  loadMoreOutputChunks(nextChunkIndex, 2); // Load 2 chunks at a time
+                }}
+                isAllLoaded={isAllOutputLoaded()}
+                placeholder={
+                  activeMenu === "jwt" 
+                    ? "Parsed JWT content will appear here..." 
                     : activeMenu === "json-summary"
                       ? "JSON summary will appear here..."
                       : "Formatted output will appear here..."
-              }
-              className={`text-area output ${hasError ? 'error' : ''}`}
-            />
+                }
+                className={`text-area output ${hasError ? 'error' : ''}`}
+                readOnly={true}
+              />
+            ) : (
+              <EnhancedTextArea
+                value={outputText}
+                readOnly={activeMenu !== "base64"}
+                onChange={(value) => activeMenu === "base64" ? handleOutputChange(value) : undefined}
+                placeholder={
+                  activeMenu === "jwt" 
+                    ? "Parsed JWT will appear here..." 
+                    : activeMenu === "base64"
+                      ? "Enter plain text here to encode..."
+                      : activeMenu === "json-summary"
+                        ? "JSON summary will appear here..."
+                        : "Formatted output will appear here..."
+                }
+                className={`text-area output ${hasError ? 'error' : ''}`}
+              />
+            )}
           </div>
         </div>
       </div>
