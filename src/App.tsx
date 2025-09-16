@@ -24,7 +24,6 @@ function App() {
   // Chunked content management
   const {
     chunks: inputChunks,
-    metadata: inputMetadata,
     isLoading: isLoadingInputChunks,
     isLoadingChunk: isLoadingInputChunk,
     currentContentId: inputContentId,
@@ -37,7 +36,6 @@ function App() {
 
   const {
     chunks: outputChunks,
-    metadata: outputMetadata,
     isLoading: isLoadingOutputChunks,
     isLoadingChunk: isLoadingOutputChunk,
     currentContentId: outputContentId,

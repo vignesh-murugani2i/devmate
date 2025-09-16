@@ -14,7 +14,6 @@ interface EnhancedTextAreaProps {
 export function EnhancedTextArea({
   value,
   onChange,
-  onBlur,
   placeholder,
   readOnly = false,
   className = '',
