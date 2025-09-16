@@ -16,6 +16,8 @@ function App() {
   const [useChunkedLoading, setUseChunkedLoading] = useState(false);
   const [chunkedInputKey, setChunkedInputKey] = useState(0);
   const [chunkedOutputKey, setChunkedOutputKey] = useState(0);
+  const [inputCopied, setInputCopied] = useState(false);
+  const [outputCopied, setOutputCopied] = useState(false);
 
   const { formatText: formatWithWorker, cleanup } = useFormatWorker();
   
@@ -116,10 +118,18 @@ function App() {
     setChunkedOutputKey(prev => prev + 1);
   };
 
-  const copyToClipboard = async (text: string) => {
+  const copyToClipboard = async (text: string, type: 'input' | 'output') => {
     try {
       await navigator.clipboard.writeText(text);
-      // You could add a toast notification here if desired
+      
+      // Show "Copied!" feedback
+      if (type === 'input') {
+        setInputCopied(true);
+        setTimeout(() => setInputCopied(false), 2000);
+      } else {
+        setOutputCopied(true);
+        setTimeout(() => setOutputCopied(false), 2000);
+      }
     } catch (error) {
       console.error("Failed to copy to clipboard:", error);
     }
@@ -425,18 +435,26 @@ function App() {
               )}
               {((inputText && activeMenu === "base64") || useChunkedLoading) && (
                 <button 
-                  onClick={() => useChunkedLoading ? (window as any).copyChunked_raw?.() : copyToClipboard(inputText)} 
+                  onClick={() => {
+                    if (useChunkedLoading) {
+                      (window as any).copyChunked_raw?.();
+                      setInputCopied(true);
+                      setTimeout(() => setInputCopied(false), 2000);
+                    } else {
+                      copyToClipboard(inputText, 'input');
+                    }
+                  }} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
-                    backgroundColor: '#28a745', 
+                    backgroundColor: inputCopied ? '#6c757d' : '#28a745', 
                     color: 'white', 
                     border: 'none', 
                     borderRadius: '3px', 
                     cursor: 'pointer'
                   }}
                 >
-                  📋 Copy
+                  {inputCopied ? '✓ Copied!' : '📋 Copy'}
                 </button>
               )}
               <div style={{ flex: 1 }}></div>
@@ -456,7 +474,10 @@ function App() {
                 }
                 className="text-area"
                 readOnly={true}
-                onCopyAll={() => console.log('Copied raw content')}
+                onCopyAll={() => {
+                  setInputCopied(true);
+                  setTimeout(() => setInputCopied(false), 2000);
+                }}
               />
             ) : (
               <textarea
@@ -489,18 +510,26 @@ function App() {
               </h3>
               {(outputText || (useChunkedLoading && activeMenu !== "base64")) && (
                 <button 
-                  onClick={() => useChunkedLoading ? (window as any).copyChunked_formatted?.() : copyToClipboard(outputText)} 
+                  onClick={() => {
+                    if (useChunkedLoading) {
+                      (window as any).copyChunked_formatted?.();
+                      setOutputCopied(true);
+                      setTimeout(() => setOutputCopied(false), 2000);
+                    } else {
+                      copyToClipboard(outputText, 'output');
+                    }
+                  }} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
-                    backgroundColor: '#28a745', 
+                    backgroundColor: outputCopied ? '#6c757d' : '#28a745', 
                     color: 'white', 
                     border: 'none', 
                     borderRadius: '3px', 
                     cursor: 'pointer'
                   }}
                 >
-                  📋 Copy
+                  {outputCopied ? '✓ Copied!' : '📋 Copy'}
                 </button>
               )}
             </div>
@@ -517,7 +546,10 @@ function App() {
                 }
                 className={`text-area output ${hasError ? 'error' : ''}`}
                 readOnly={true}
-                onCopyAll={() => console.log('Copied formatted content')}
+                onCopyAll={() => {
+                  setOutputCopied(true);
+                  setTimeout(() => setOutputCopied(false), 2000);
+                }}
               />
             ) : (
               <textarea
