@@ -18,6 +18,8 @@ function App() {
   const [chunkedOutputKey, setChunkedOutputKey] = useState(0);
   const [inputCopied, setInputCopied] = useState(false);
   const [outputCopied, setOutputCopied] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
 
   const { formatText: formatWithWorker, cleanup } = useFormatWorker();
   
@@ -132,6 +134,68 @@ function App() {
       }
     } catch (error) {
       console.error("Failed to copy to clipboard:", error);
+    }
+  };
+
+  const downloadFormattedJson = async () => {
+    if (activeMenu !== "json") return;
+    
+    setIsDownloading(true);
+    
+    try {
+      let contentToDownload = "";
+      
+      if (useChunkedLoading) {
+        // Get the full formatted content from backend
+        const info = await invoke("get_content_info") as any;
+        
+        if (!info.has_formatted) {
+          throw new Error("No formatted content available for download");
+        }
+        
+        // Get the entire formatted content in one request
+        const result = await invoke('get_content_chunk', {
+          contentType: 'formatted',
+          start: 0,
+          chunkSize: info.formatted_length
+        }) as any;
+        
+        contentToDownload = result.chunk;
+      } else {
+        // Use the output text for smaller files
+        contentToDownload = outputText;
+      }
+      
+      if (!contentToDownload.trim()) {
+        throw new Error("No content to download");
+      }
+      
+      // Create blob and download
+      const blob = new Blob([contentToDownload], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `formatted_${Date.now()}.json`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      
+      a.click();
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+      
+      // Show success feedback
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+      
+    } catch (error) {
+      console.error("Failed to download file:", error);
+      alert(`Download failed: ${error}`);
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -508,30 +572,50 @@ function App() {
                       ? "JSON Summary"
                       : "Formatted Output"}
               </h3>
-              {(outputText || (useChunkedLoading && activeMenu !== "base64")) && (
-                <button 
-                  onClick={() => {
-                    if (useChunkedLoading) {
-                      (window as any).copyChunked_formatted?.();
-                      setOutputCopied(true);
-                      setTimeout(() => setOutputCopied(false), 2000);
-                    } else {
-                      copyToClipboard(outputText, 'output');
-                    }
-                  }} 
-                  style={{ 
-                    padding: '4px 8px', 
-                    fontSize: '11px', 
-                    backgroundColor: outputCopied ? '#6c757d' : '#28a745', 
-                    color: 'white', 
-                    border: 'none', 
-                    borderRadius: '3px', 
-                    cursor: 'pointer'
-                  }}
-                >
-                  {outputCopied ? '✓ Copied!' : '📋 Copy'}
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {(outputText || (useChunkedLoading && activeMenu !== "base64")) && (
+                  <button 
+                    onClick={() => {
+                      if (useChunkedLoading) {
+                        (window as any).copyChunked_formatted?.();
+                        setOutputCopied(true);
+                        setTimeout(() => setOutputCopied(false), 2000);
+                      } else {
+                        copyToClipboard(outputText, 'output');
+                      }
+                    }} 
+                    style={{ 
+                      padding: '4px 8px', 
+                      fontSize: '11px', 
+                      backgroundColor: outputCopied ? '#6c757d' : '#28a745', 
+                      color: 'white', 
+                      border: 'none', 
+                      borderRadius: '3px', 
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {outputCopied ? '✓ Copied!' : '📋 Copy'}
+                  </button>
+                )}
+                {activeMenu === "json" && (outputText.trim() || useChunkedLoading) && (
+                  <button 
+                    onClick={downloadFormattedJson}
+                    disabled={isDownloading}
+                    style={{ 
+                      padding: '4px 8px', 
+                      fontSize: '11px', 
+                      backgroundColor: downloadSuccess ? '#28a745' : isDownloading ? '#6c757d' : '#007bff',
+                      color: 'white', 
+                      border: 'none', 
+                      borderRadius: '3px', 
+                      cursor: isDownloading ? 'not-allowed' : 'pointer',
+                      opacity: isDownloading ? 0.7 : 1
+                    }}
+                  >
+                    {downloadSuccess ? '✓ Downloaded!' : isDownloading ? '⏳ Downloading...' : '💾 Download'}
+                  </button>
+                )}
+              </div>
             </div>
             {useChunkedLoading && activeMenu !== "base64" ? (
               <ChunkedTextarea
