@@ -355,32 +355,21 @@ function App() {
               <h3 style={{ margin: 0 }}>
                 {activeMenu === "base64" ? "Encoded Text" : "Input"}
               </h3>
-              {(activeMenu === "json" || activeMenu === "xml" || activeMenu === "json-summary") && (
-                <>
-                  <button 
-                    onClick={handleOpenFileClick} 
-                    disabled={isFileOpening || isFormatting}
-                    style={{ 
-                      padding: '6px 12px', 
-                      fontSize: '12px', 
-                      backgroundColor: (isFileOpening || isFormatting) ? '#95a5a6' : '#3498db', 
-                      color: 'white', 
-                      border: 'none', 
-                      borderRadius: '4px', 
-                      cursor: (isFileOpening || isFormatting) ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    📁 {isFileOpening ? 'Opening...' : 'Open File'}
-                  </button>
-                  <span style={{
-                    fontSize: '11px',
-                    color: '#999',
-                    fontStyle: 'italic',
-                    marginLeft: '8px'
-                  }}>
-                    Recommended for files over 1000 lines or 1MB for optimal performance
-                  </span>
-                </>
+              {(activeMenu === "json" || activeMenu === "json-summary") && (
+                <button 
+                  onClick={handleOpenFileClick} 
+                  style={{ 
+                    padding: '6px 12px', 
+                    fontSize: '12px', 
+                    backgroundColor: '#3498db', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '4px', 
+                    cursor: 'pointer'
+                  }}
+                >
+                  Open File
+                </button>
               )}
               {inputText && activeMenu === "base64" && (
                 <button 
