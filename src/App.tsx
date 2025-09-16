@@ -1,10 +1,7 @@
 import { useState, useEffect } from "react";
 import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
-import { useFormatWorker } from './hooks/useFormatWorker';
-import { useChunkedContent } from './hooks/useChunkedContent';
-import { EnhancedTextArea } from './components/EnhancedTextArea';
-import { ChunkedTextDisplay } from './components/ChunkedTextDisplay';
+import ChunkedTextarea from './components/ChunkedTextarea';
 import "./App.css";
 
 type MenuOption = "json" | "xml" | "jwt" | "base64" | "json-summary";
@@ -15,9 +12,10 @@ function App() {
   const [outputText, setOutputText] = useState("");
   const [hasError, setHasError] = useState(false);
   const [base64Error, setBase64Error] = useState<string>("");
-  const [useChunkedMode, setUseChunkedMode] = useState(false);
-  const [isFileOpening, setIsFileOpening] = useState(false);
-  const [isFormatting, setIsFormatting] = useState(false);
+  const [isLoadingFromFile, setIsLoadingFromFile] = useState(false);
+  const [useChunkedLoading, setUseChunkedLoading] = useState(false);
+  const [chunkedInputKey, setChunkedInputKey] = useState(0);
+  const [chunkedOutputKey, setChunkedOutputKey] = useState(0);
 
   const { formatText: formatWithWorker, cleanup } = useFormatWorker();
   
@@ -53,32 +51,69 @@ function App() {
 
   const handleMenuSwitch = async (menuOption: MenuOption) => {
     setActiveMenu(menuOption);
-    
-    // Clear regular text content
     setInputText("");
     setOutputText("");
     setHasError(false);
-    setBase64Error("");
-    
-    // Clear chunked content
-    await clearInputContent();
-    await clearOutputContent();
-    setUseChunkedMode(false);
+    setUseChunkedLoading(false);
+    // Reset chunked components by changing keys
+    setChunkedInputKey(prev => prev + 1);
+    setChunkedOutputKey(prev => prev + 1);
   };
 
-  
+  const formatText = async () => {
+    if (!inputText.trim() && !useChunkedLoading) return;
+
+    setIsLoading(true);
+    setHasError(false);
+    try {
+      let textToFormat = inputText;
+      
+      // If using chunked loading, get the raw content from backend first
+      if (useChunkedLoading) {
+        const info = await invoke("get_content_info") as any;
+        if (!info.has_raw) {
+          throw new Error("No content available for formatting");
+        }
+        // Backend will format the stored raw content
+        textToFormat = ""; // Not used when backend has stored content
+      }
+      
+      const formatted = await invoke("format_text", {
+        text: textToFormat,
+        formatType: activeMenu,
+      });
+      
+      if (useChunkedLoading) {
+        // Reset the chunked output component to load formatted content
+        setChunkedOutputKey(prev => prev + 1);
+      } else {
+        setOutputText(formatted as string);
+      }
+    } catch (error) {
+      setOutputText(`Error: ${error}`);
+      setHasError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const clearText = async () => {
-    // Clear regular text
     setInputText("");
     setOutputText("");
     setHasError(false);
     setBase64Error("");
+    setUseChunkedLoading(false);
     
-    // Clear chunked content
-    await clearInputContent();
-    await clearOutputContent();
-    setUseChunkedMode(false);
+    // Clear backend storage
+    try {
+      await invoke("clear_content");
+    } catch (error) {
+      console.error("Failed to clear backend storage:", error);
+    }
+    
+    // Reset chunked components
+    setChunkedInputKey(prev => prev + 1);
+    setChunkedOutputKey(prev => prev + 1);
   };
 
   const copyToClipboard = async (text: string) => {
@@ -167,17 +202,20 @@ function App() {
     try {
       const text = await readTextFile(selected);
       
-      // Check if content is large enough for chunked mode
-      const isLargeContent = text.length > 100000 || text.split('\n').length > 1000;
+      // Determine if we should use chunked loading (for files > 50KB)
+      const shouldUseChunked = text.length > 50000; // 50KB threshold
       
-      if (isLargeContent) {
-        // Use chunked mode for large files
-        await loadFileContent(text);
-        setUseChunkedMode(true);
+      if (shouldUseChunked) {
+        // Store content in backend and use chunked loading
+        await invoke("store_raw_content", { content: text });
+        setUseChunkedLoading(true);
+        setInputText(""); // Clear frontend text
+        // Trigger chunked component to reload
+        setChunkedInputKey(prev => prev + 1);
       } else {
-        // Use regular mode for small files
+        // Use traditional loading for smaller files
+        setUseChunkedLoading(false);
         setInputText(text);
-        setUseChunkedMode(false);
       }
     } catch (e) {
       console.error("Failed to read file:", e);
@@ -349,6 +387,20 @@ function App() {
             ⚠️ {base64Error}
           </div>
         )}
+        {useChunkedLoading && (
+          <div style={{ 
+            background: '#fff3cd', 
+            border: '1px solid #ffeeba', 
+            borderRadius: '4px', 
+            padding: '8px 12px', 
+            margin: '0 0 16px 0',
+            fontSize: '14px',
+            color: '#856404',
+            textAlign: 'center'
+          }}>
+            📄 Large file loaded - Content is fetched on demand as you scroll
+          </div>
+        )}
         <div className="formatter-container">
           <div className="input-section">
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10, gap: '20px' }}>
@@ -371,9 +423,9 @@ function App() {
                   Open File
                 </button>
               )}
-              {inputText && activeMenu === "base64" && (
+              {((inputText && activeMenu === "base64") || useChunkedLoading) && (
                 <button 
-                  onClick={() => copyToClipboard(inputText)} 
+                  onClick={() => useChunkedLoading ? (window as any).copyChunked_raw?.() : copyToClipboard(inputText)} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
@@ -389,30 +441,27 @@ function App() {
               )}
               <div style={{ flex: 1 }}></div>
             </div>
-            {useChunkedMode ? (
-              <ChunkedTextDisplay
-                content={getInputContent()}
-                isLoading={isLoadingInputChunks}
-                isLoadingChunk={isLoadingInputChunk}
-                onLoadMore={() => {
-                  const nextChunkIndex = Math.floor(inputChunks.length);
-                  loadMoreInputChunks(nextChunkIndex, 2); // Load 2 chunks at a time
-                }}
-                isAllLoaded={isAllInputLoaded()}
+            {useChunkedLoading ? (
+              <ChunkedTextarea
+                key={chunkedInputKey}
+                contentType="raw"
                 placeholder={
                   activeMenu === "jwt" 
-                    ? "Large JWT content loaded..." 
-                    : activeMenu === "json-summary"
-                      ? "Large JSON content loaded..."
-                      : `Large ${activeMenu.toUpperCase()} content loaded...`
+                    ? "Paste your JWT token here..." 
+                    : activeMenu === "base64"
+                      ? "Paste Base64 encoded text here..."
+                      : activeMenu === "json-summary"
+                        ? "Paste your JSON here to get a summary..."
+                        : `Paste your ${activeMenu.toUpperCase()} here...`
                 }
                 className="text-area"
                 readOnly={true}
+                onCopyAll={() => console.log('Copied raw content')}
               />
             ) : (
-              <EnhancedTextArea
+              <textarea
                 value={inputText}
-                onChange={(value) => activeMenu === "base64" ? handleInputChange(value) : setInputText(value)}
+                onChange={(e) => activeMenu === "base64" ? handleInputChange(e.target.value) : setInputText(e.target.value)}
                 placeholder={
                   activeMenu === "jwt" 
                     ? "Paste your JWT token here..." 
@@ -438,9 +487,9 @@ function App() {
                       ? "JSON Summary"
                       : "Formatted Output"}
               </h3>
-              {outputText && (
+              {(outputText || (useChunkedLoading && activeMenu !== "base64")) && (
                 <button 
-                  onClick={() => copyToClipboard(outputText)} 
+                  onClick={() => useChunkedLoading ? (window as any).copyChunked_formatted?.() : copyToClipboard(outputText)} 
                   style={{ 
                     padding: '4px 8px', 
                     fontSize: '11px', 
@@ -455,31 +504,26 @@ function App() {
                 </button>
               )}
             </div>
-            {useChunkedMode && outputContentId ? (
-              <ChunkedTextDisplay
-                content={getOutputContent()}
-                isLoading={isLoadingOutputChunks}
-                isLoadingChunk={isLoadingOutputChunk}
-                onLoadMore={() => {
-                  const nextChunkIndex = Math.floor(outputChunks.length);
-                  loadMoreOutputChunks(nextChunkIndex, 2); // Load 2 chunks at a time
-                }}
-                isAllLoaded={isAllOutputLoaded()}
+            {useChunkedLoading && activeMenu !== "base64" ? (
+              <ChunkedTextarea
+                key={chunkedOutputKey}
+                contentType="formatted"
                 placeholder={
                   activeMenu === "jwt" 
-                    ? "Parsed JWT content will appear here..." 
+                    ? "Parsed JWT will appear here..." 
                     : activeMenu === "json-summary"
                       ? "JSON summary will appear here..."
                       : "Formatted output will appear here..."
                 }
                 className={`text-area output ${hasError ? 'error' : ''}`}
                 readOnly={true}
+                onCopyAll={() => console.log('Copied formatted content')}
               />
             ) : (
-              <EnhancedTextArea
+              <textarea
                 value={outputText}
                 readOnly={activeMenu !== "base64"}
-                onChange={(value) => activeMenu === "base64" ? handleOutputChange(value) : undefined}
+                onChange={(e) => activeMenu === "base64" ? handleOutputChange(e.target.value) : undefined}
                 placeholder={
                   activeMenu === "jwt" 
                     ? "Parsed JWT will appear here..." 
