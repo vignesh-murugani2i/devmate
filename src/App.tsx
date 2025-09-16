@@ -69,6 +69,10 @@ function App() {
 
     setIsLoading(true);
     setHasError(false);
+    
+    // Add a small delay to ensure the loader shows before heavy processing
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
     try {
       let textToFormat = inputText;
       
