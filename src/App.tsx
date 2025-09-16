@@ -278,26 +278,56 @@ function App() {
     setBase64Error("");
     
     try {
-      const text = await readTextFile(selected);
-      
-      // Determine if we should use chunked loading (for files > 50KB)
-      const shouldUseChunked = text.length > 50000; // 50KB threshold
-      
-      if (shouldUseChunked) {
-        // Store content in backend and use chunked loading
-        await invoke("store_raw_content", { content: text });
-        setUseChunkedLoading(true);
-        setInputText(""); // Clear frontend text
-        // Trigger chunked component to reload
-        setChunkedInputKey(prev => prev + 1);
-      } else {
-        // Use traditional loading for smaller files
-        setUseChunkedLoading(false);
-        setInputText(text);
+      // First, try to use the streaming approach for large files
+      try {
+        const streamResult = await invoke("read_large_file_streaming", { filePath: selected }) as any;
+        
+        if (streamResult.use_streaming) {
+          // Large file was handled by backend streaming
+          console.log(`Large file loaded: ${streamResult.file_size} bytes using streaming`);
+          setUseChunkedLoading(true);
+          setInputText(""); // Clear frontend text
+          // Trigger chunked component to reload
+          setChunkedInputKey(prev => prev + 1);
+        } else {
+          // File is small enough for frontend to handle
+          const text = await readTextFile(selected);
+          const shouldUseChunked = text.length > 50000; // 50KB threshold
+          
+          if (shouldUseChunked) {
+            // Store content in backend and use chunked loading
+            await invoke("store_raw_content", { content: text });
+            setUseChunkedLoading(true);
+            setInputText(""); // Clear frontend text
+            // Trigger chunked component to reload
+            setChunkedInputKey(prev => prev + 1);
+          } else {
+            // Use traditional loading for smaller files
+            setUseChunkedLoading(false);
+            setInputText(text);
+          }
+        }
+      } catch (streamError) {
+        // Fallback to traditional approach if streaming fails
+        console.warn("Streaming approach failed, trying traditional:", streamError);
+        const text = await readTextFile(selected);
+        
+        // Determine if we should use chunked loading
+        const shouldUseChunked = text.length > 50000;
+        
+        if (shouldUseChunked) {
+          await invoke("store_raw_content", { content: text });
+          setUseChunkedLoading(true);
+          setInputText("");
+          setChunkedInputKey(prev => prev + 1);
+        } else {
+          setUseChunkedLoading(false);
+          setInputText(text);
+        }
       }
     } catch (e) {
       console.error("Failed to read file:", e);
-      setHasError(true);
+      alert(`Failed to read file: ${e}. The file might be too large for this browser to handle.`);
     } finally {
       setIsFileOpening(false);
     }

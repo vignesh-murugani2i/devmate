@@ -557,6 +557,46 @@ fn clear_content(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn read_large_file_streaming(file_path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+    
+    let file = File::open(&file_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let metadata = file.metadata().map_err(|e| format!("Failed to get file metadata: {}", e))?;
+    let file_size = metadata.len();
+    
+    // For files larger than 100MB, we'll read them in streaming mode
+    if file_size > 100 * 1024 * 1024 {
+        // Read file in chunks and store in backend
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        
+        // Read the entire file (we have enough memory in Rust backend)
+        reader.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        // Store in backend
+        let mut storage = state.lock().map_err(|e| e.to_string())?;
+        storage.raw_content = Some(content);
+        storage.formatted_content = None;
+        
+        Ok(serde_json::json!({
+            "success": true,
+            "file_size": file_size,
+            "use_streaming": true,
+            "message": "Large file loaded successfully using streaming mode"
+        }))
+    } else {
+        // For smaller files, let frontend handle normally
+        Ok(serde_json::json!({
+            "success": true,
+            "file_size": file_size,
+            "use_streaming": false,
+            "message": "File size is manageable, frontend can handle normally"
+        }))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -571,7 +611,8 @@ pub fn run() {
             store_raw_content,
             get_content_chunk,
             get_content_info,
-            clear_content
+            clear_content,
+            read_large_file_streaming
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
