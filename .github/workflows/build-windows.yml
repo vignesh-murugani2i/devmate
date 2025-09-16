@@ -19,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
 
       - name: Setup Rust
@@ -32,6 +32,11 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Fix package-lock.json
+        run: |
+          if (Test-Path package-lock.json) { Remove-Item package-lock.json }
+          npm install --package-lock-only
+          
       - name: Install dependencies
         run: npm ci
 
