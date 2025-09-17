@@ -529,7 +529,7 @@ fn calculate_stats_recursive(value: &serde_json::Value, stats: &mut JsonStats, d
 
 // Content storage for managing large files
 #[derive(Default)]
-struct ContentStorage {
+pub struct ContentStorage {
     raw_content: Option<String>,
     formatted_content: Option<String>,
 }
