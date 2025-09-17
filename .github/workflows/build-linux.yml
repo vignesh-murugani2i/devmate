@@ -2,7 +2,7 @@ name: Build Linux App
 
 on:
   push:
-    branches: [ main, master ]
+    # branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
@@ -13,7 +13,7 @@ permissions:
   
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
       - name: Checkout repository
@@ -47,6 +47,20 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Check build environment
+        run: |
+          echo "Ubuntu version:"
+          lsb_release -a
+          echo "GLIBC version:"
+          ldd --version
+          echo "Rust version:"
+          rustc --version
+
+      - name: Configure build environment for compatibility
+        run: |
+          # Ensure we're building with maximum compatibility for Ubuntu 22.04
+          echo "RUSTFLAGS=-C target-cpu=x86-64 -C link-arg=-Wl,--compress-debug-sections=zlib" >> $GITHUB_ENV
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
@@ -63,33 +77,91 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Get version from tag or package.json
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
       - name: Build Tauri app (Linux)
         run: |
           npm run tauri build -- --target x86_64-unknown-linux-gnu --bundles deb,appimage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # - name: Verify binary compatibility
+      #   run: |
+      #     echo "Checking binary GLIBC dependencies:"
+      #     # Find the built binary
+      #     BINARY_PATH=$(find src-tauri/target/x86_64-unknown-linux-gnu/release -name "devmate" -type f | head -1)
+      #     if [ -f "$BINARY_PATH" ]; then
+      #       echo "Binary found at: $BINARY_PATH"
+      #       echo "GLIBC dependencies:"
+      #       objdump -T "$BINARY_PATH" | grep GLIBC | sort -u
+      #       echo "All dependencies:"
+      #       ldd "$BINARY_PATH" || true
+      #     else
+      #       echo "Binary not found, checking bundle directory..."
+      #       find src-tauri/target/x86_64-unknown-linux-gnu/release -name "*devmate*" -type f
+      #     fi
+
       - name: Upload Linux DEB
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-Linux-x64.deb
+          name: DevMate-v${{ steps.get_version.outputs.version }}-Linux-x64.deb
           path: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
           if-no-files-found: error
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-Linux-x64.AppImage
+          name: DevMate-v${{ steps.get_version.outputs.version }}-Linux-x64.AppImage
           path: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+
+      - name: Rename files with version for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Create a release directory
+          mkdir -p release-assets
+          
+          # Copy and rename DEB files
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              # Replace the original name with versioned name
+              new_name="DevMate-v${{ steps.get_version.outputs.version }}-Linux-x64.deb"
+              cp "$file" "release-assets/$new_name"
+              echo "Renamed $filename to $new_name"
+            fi
+          done
+          
+          # Copy and rename AppImage files
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              # Replace the original name with versioned name  
+              new_name="DevMate-v${{ steps.get_version.outputs.version }}-Linux-x64.AppImage"
+              cp "$file" "release-assets/$new_name"
+              echo "Renamed $filename to $new_name"
+            fi
+          done
+          
+          # List the files that will be uploaded
+          echo "Files ready for release:"
+          ls -la release-assets/
 
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            release-assets/*
           generate_release_notes: true
           draft: false
           prerelease: false

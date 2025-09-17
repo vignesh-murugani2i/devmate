@@ -1,65 +1,8 @@
 use base64;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde_json;
-use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
-use serde::{Deserialize, Serialize};
-
-// Content storage for chunked loading
-#[derive(Debug, Clone)]
-struct ContentStorage {
-    content: String,
-    chunk_size: usize,
-    total_chunks: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct ContentChunk {
-    chunk_index: usize,
-    content: String,
-    total_chunks: usize,
-    is_last_chunk: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct FileMetadata {
-    total_lines: usize,
-    total_size: usize,
-    total_chunks: usize,
-    chunk_size: usize,
-}
-
-type ContentStore = Mutex<HashMap<String, ContentStorage>>;
-
-impl ContentStorage {
-    fn new(content: String, chunk_size: usize) -> Self {
-        let total_chunks = (content.len() as f64 / chunk_size as f64).ceil() as usize;
-        Self {
-            content,
-            chunk_size,
-            total_chunks,
-        }
-    }
-
-    fn get_chunk(&self, chunk_index: usize) -> Option<ContentChunk> {
-        if chunk_index >= self.total_chunks {
-            return None;
-        }
-
-        let start = chunk_index * self.chunk_size;
-        let end = std::cmp::min(start + self.chunk_size, self.content.len());
-        let chunk_content = self.content[start..end].to_string();
-
-        Some(ContentChunk {
-            chunk_index,
-            content: chunk_content,
-            total_chunks: self.total_chunks,
-            is_last_chunk: chunk_index == self.total_chunks - 1,
-        })
-    }
-}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -68,17 +11,36 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-fn format_text(text: &str, format_type: &str) -> Result<String, String> {
-    match format_type {
-        "json" => format_json(text),
-        "xml" => format_xml(text),
-        "jwt" => parse_jwt(text),
-        "encode" => encode_base64(text),
-        "decode" => decode_base64(text),
-        "json-summary" => summarize_json(text),
-        _ => Err("Unsupported format type".to_string()),
+fn format_text(text: String, format_type: String, state: State<AppState>) -> Result<String, String> {
+    // If text is empty, try to get raw content from storage
+    let content_to_format = if text.is_empty() {
+        let storage = state.lock().map_err(|e| e.to_string())?;
+        storage.raw_content.clone().unwrap_or_default()
+    } else {
+        text
+    };
+    
+    let result = match format_type.as_str() {
+        "json" => format_json(&content_to_format),
+        "xml" => format_xml(&content_to_format),
+        "jwt" => parse_jwt(&content_to_format),
+        "json-summary" => summarize_json(&content_to_format),
+        "encode" => encode_base64(&content_to_format),
+        "decode" => decode_base64(&content_to_format),
+        _ => Err("Unknown format type".to_string()),
+    };
+    
+    // Store formatted content in backend for chunked loading
+    if let Ok(ref formatted) = result {
+        if format_type != "encode" && format_type != "decode" {
+            let mut storage = state.lock().map_err(|e| e.to_string())?;
+            storage.formatted_content = Some(formatted.clone());
+        }
     }
+    
+    result
 }
+
 
 fn format_json(text: &str) -> Result<String, String> {
     // match serde_json::from_str::<serde_json::Value>(text) {
@@ -512,110 +474,144 @@ fn calculate_stats_recursive(value: &serde_json::Value, stats: &mut JsonStats, d
     }
 }
 
-// Store file content in backend and return metadata
-#[tauri::command]
-fn load_file_content(
-    content: String,
-    content_id: String,
-    chunk_size: Option<usize>,
-    store: State<ContentStore>
-) -> Result<FileMetadata, String> {
-    let chunk_size = chunk_size.unwrap_or(50000); // Default 50KB chunks
-    let content_storage = ContentStorage::new(content.clone(), chunk_size);
-    
-    let metadata = FileMetadata {
-        total_lines: content.lines().count(),
-        total_size: content.len(),
-        total_chunks: content_storage.total_chunks,
-        chunk_size,
-    };
-    
-    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
-    store.insert(content_id, content_storage);
-    
-    Ok(metadata)
+// Content storage for managing large files
+#[derive(Default)]
+struct ContentStorage {
+    raw_content: Option<String>,
+    formatted_content: Option<String>,
 }
 
-// Get a specific chunk of content
+pub type AppState = Mutex<ContentStorage>;
+
+#[tauri::command]
+fn store_raw_content(content: String, state: State<AppState>) -> Result<(), String> {
+    let mut storage = state.lock().map_err(|e| e.to_string())?;
+    storage.raw_content = Some(content);
+    storage.formatted_content = None; // Clear formatted content when new raw content is set
+    Ok(())
+}
+
 #[tauri::command]
 fn get_content_chunk(
-    content_id: String,
-    chunk_index: usize,
-    store: State<ContentStore>
-) -> Result<ContentChunk, String> {
-    let store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
+    content_type: String, // "raw" or "formatted"
+    start: usize,
+    chunk_size: usize,
+    state: State<AppState>
+) -> Result<serde_json::Value, String> {
+    let storage = state.lock().map_err(|e| e.to_string())?;
     
-    match store.get(&content_id) {
-        Some(content_storage) => {
-            match content_storage.get_chunk(chunk_index) {
-                Some(chunk) => Ok(chunk),
-                None => Err("Chunk index out of bounds".to_string()),
+    let content = match content_type.as_str() {
+        "raw" => storage.raw_content.as_ref(),
+        "formatted" => storage.formatted_content.as_ref(),
+        _ => return Err("Invalid content type".to_string()),
+    };
+    
+    match content {
+        Some(content_str) => {
+            let total_length = content_str.len();
+            let end = std::cmp::min(start + chunk_size, total_length);
+            
+            if start >= total_length {
+                return Ok(serde_json::json!({
+                    "chunk": "",
+                    "has_more": false,
+                    "total_length": total_length,
+                    "next_start": total_length
+                }));
             }
+            
+            let chunk = &content_str[start..end];
+            let has_more = end < total_length;
+            
+            Ok(serde_json::json!({
+                "chunk": chunk,
+                "has_more": has_more,
+                "total_length": total_length,
+                "next_start": end
+            }))
         },
-        None => Err("Content not found".to_string()),
+        None => Err("No content stored".to_string()),
     }
 }
 
-// Format content and store in backend
 #[tauri::command]
-fn format_and_store_content(
-    content_id: String,
-    formatted_content_id: String,
-    format_type: String,
-    chunk_size: Option<usize>,
-    store: State<ContentStore>
-) -> Result<FileMetadata, String> {
-    let chunk_size = chunk_size.unwrap_or(50000);
+fn get_content_info(state: State<AppState>) -> Result<serde_json::Value, String> {
+    let storage = state.lock().map_err(|e| e.to_string())?;
     
-    // Get original content
-    let original_content = {
-        let store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
-        match store.get(&content_id) {
-            Some(content_storage) => content_storage.content.clone(),
-            None => return Err("Original content not found".to_string()),
-        }
-    };
+    let raw_length = storage.raw_content.as_ref().map(|s| s.len()).unwrap_or(0);
+    let formatted_length = storage.formatted_content.as_ref().map(|s| s.len()).unwrap_or(0);
     
-    // Format the content
-    let formatted_content = format_text(&original_content, &format_type)?;
-    
-    // Store formatted content
-    let content_storage = ContentStorage::new(formatted_content.clone(), chunk_size);
-    let metadata = FileMetadata {
-        total_lines: formatted_content.lines().count(),
-        total_size: formatted_content.len(),
-        total_chunks: content_storage.total_chunks,
-        chunk_size,
-    };
-    
-    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
-    store.insert(formatted_content_id, content_storage);
-    
-    Ok(metadata)
+    Ok(serde_json::json!({
+        "has_raw": storage.raw_content.is_some(),
+        "has_formatted": storage.formatted_content.is_some(),
+        "raw_length": raw_length,
+        "formatted_length": formatted_length
+    }))
 }
 
-// Clear content from backend storage
 #[tauri::command]
-fn clear_content(content_id: String, store: State<ContentStore>) -> Result<(), String> {
-    let mut store = store.lock().map_err(|e| format!("Lock error: {}", e))?;
-    store.remove(&content_id);
+fn clear_content(state: State<AppState>) -> Result<(), String> {
+    let mut storage = state.lock().map_err(|e| e.to_string())?;
+    storage.raw_content = None;
+    storage.formatted_content = None;
     Ok(())
+}
+
+#[tauri::command]
+fn read_large_file_streaming(file_path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+    
+    let file = File::open(&file_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let metadata = file.metadata().map_err(|e| format!("Failed to get file metadata: {}", e))?;
+    let file_size = metadata.len();
+    
+    // For files larger than 100MB, we'll read them in streaming mode
+    if file_size > 100 * 1024 * 1024 {
+        // Read file in chunks and store in backend
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        
+        // Read the entire file (we have enough memory in Rust backend)
+        reader.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        // Store in backend
+        let mut storage = state.lock().map_err(|e| e.to_string())?;
+        storage.raw_content = Some(content);
+        storage.formatted_content = None;
+        
+        Ok(serde_json::json!({
+            "success": true,
+            "file_size": file_size,
+            "use_streaming": true,
+            "message": "Large file loaded successfully using streaming mode"
+        }))
+    } else {
+        // For smaller files, let frontend handle normally
+        Ok(serde_json::json!({
+            "success": true,
+            "file_size": file_size,
+            "use_streaming": false,
+            "message": "File size is manageable, frontend can handle normally"
+        }))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(ContentStore::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             format_text,
-            load_file_content,
+            store_raw_content,
             get_content_chunk,
-            format_and_store_content,
-            clear_content
+            get_content_info,
+            clear_content,
+            read_large_file_streaming
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

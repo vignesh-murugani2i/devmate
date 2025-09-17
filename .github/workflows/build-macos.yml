@@ -1,9 +1,9 @@
 name: Build macOS App
 
 on:
-  # push:
+  push:
   #   branches: [ main, master ]
-  #   tags: [ 'v*' ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -46,6 +46,17 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Get version from tag or package.json
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
       - name: Build Tauri app (Universal Binary)
         run: |
           npm run tauri build -- --target universal-apple-darwin --bundles dmg,app
@@ -55,7 +66,7 @@ jobs:
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-macOS-Installer.dmg
+          name: DevMate-v${{ steps.get_version.outputs.version }}-macOS-Installer.dmg
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
@@ -64,32 +75,61 @@ jobs:
           cd src-tauri/target/universal-apple-darwin/release/bundle/macos
           for app in *.app; do
             if [ -d "$app" ]; then
-              zip -r "../${app%.app}_macOS-Universal.zip" "$app"
-              echo "Created ZIP: ${app%.app}_macOS-Universal.zip"
+              zip -r "../DevMate-v${{ steps.get_version.outputs.version }}-macOS-Universal.zip" "$app"
+              echo "Created ZIP: DevMate-v${{ steps.get_version.outputs.version }}-macOS-Universal.zip"
             fi
           done
 
       - name: Upload macOS App Bundle (ZIP)
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-macOS-App-Universal.zip
+          name: DevMate-v${{ steps.get_version.outputs.version }}-macOS-App-Universal.zip
           path: src-tauri/target/universal-apple-darwin/release/bundle/*.zip
           if-no-files-found: error
 
       - name: Upload macOS App Bundle (Raw)
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-macOS-App-Bundle.app
+          name: DevMate-v${{ steps.get_version.outputs.version }}-macOS-App-Bundle.app
           path: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: warn
 
+      - name: Rename files with version for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Create a release directory
+          mkdir -p release-assets
+          
+          # Copy and rename DMG files
+          for file in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              new_name="DevMate-v${{ steps.get_version.outputs.version }}-macOS-Installer.dmg"
+              cp "$file" "release-assets/$new_name"
+              echo "Renamed $filename to $new_name"
+            fi
+          done
+          
+          # Copy and rename ZIP files
+          for file in src-tauri/target/universal-apple-darwin/release/bundle/*.zip; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              new_name="DevMate-v${{ steps.get_version.outputs.version }}-macOS-Universal.zip"
+              cp "$file" "release-assets/$new_name"
+              echo "Renamed $filename to $new_name"
+            fi
+          done
+          
+          # List the files that will be uploaded
+          echo "Files ready for release:"
+          ls -la release-assets/
+
       - name: Create Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')  # Change to 'github.ref == 'refs/heads/main'' for every main push
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/*.zip
+            release-assets/*
           generate_release_notes: true
           draft: false
           prerelease: false

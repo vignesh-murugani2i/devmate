@@ -2,7 +2,7 @@ name: Build Windows App
 
 on:
   push:
-    branches: [ main, master ]
+    # branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
@@ -46,6 +46,17 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Get version from tag or package.json
+        id: get_version
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $VERSION = $env:GITHUB_REF -replace "refs/tags/v", ""
+          } else {
+            $VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          }
+          echo "version=$VERSION" >> $env:GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
       - name: Build Tauri app (Windows)
         run: |
           npm run tauri build -- --target x86_64-pc-windows-msvc --bundles msi,nsis
@@ -55,24 +66,47 @@ jobs:
       - name: Upload Windows MSI
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-Windows-x64.msi
+          name: DevMate-v${{ steps.get_version.outputs.version }}-Windows-x64.msi
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: error
 
       - name: Upload Windows NSIS Installer
         uses: actions/upload-artifact@v4
         with:
-          name: DevMate-Windows-x64-setup.exe
+          name: DevMate-v${{ steps.get_version.outputs.version }}-Windows-x64-setup.exe
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+      - name: Rename files with version for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Create a release directory
+          New-Item -ItemType Directory -Force -Path release-assets
+          
+          # Copy and rename MSI files
+          Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi" | ForEach-Object {
+            $newName = "DevMate-v${{ steps.get_version.outputs.version }}-Windows-x64.msi"
+            Copy-Item $_.FullName "release-assets/$newName"
+            Write-Host "Renamed $($_.Name) to $newName"
+          }
+          
+          # Copy and rename NSIS files
+          Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" | ForEach-Object {
+            $newName = "DevMate-v${{ steps.get_version.outputs.version }}-Windows-x64-setup.exe"
+            Copy-Item $_.FullName "release-assets/$newName"
+            Write-Host "Renamed $($_.Name) to $newName"
+          }
+          
+          # List the files that will be uploaded
+          Write-Host "Files ready for release:"
+          Get-ChildItem release-assets
 
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            release-assets/*
           generate_release_notes: true
           draft: false
           prerelease: false
