@@ -2,7 +2,7 @@ name: Build Linux App
 
 on:
   push:
-    branches: [ main, master ]
+    # branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
