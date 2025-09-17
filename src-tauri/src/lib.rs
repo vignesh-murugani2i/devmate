@@ -4,7 +4,7 @@ use base64::Engine;
 use std::sync::Mutex;
 use tauri::State;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -43,40 +43,93 @@ fn format_text(text: String, format_type: String, state: State<AppState>) -> Res
 
 
 fn format_json(text: &str) -> Result<String, String> {
-    // match serde_json::from_str::<serde_json::Value>(text) {
-    //     Ok(parsed) => {
-    //         match serde_json::to_string_pretty(&parsed) {
-    //             Ok(formatted) => Ok(formatted),
-    //             Err(e) => Err(format!("Failed to format JSON: {}", e)),
-    //         }
-    //     }
-    //     Err(e) => Err(format!("Invalid JSON: {}", e)),
-    // }
     match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(parsed) => serde_json::to_string_pretty(&parsed)
-            .map_err(|e| format!("Failed to format JSON: {}", e)),
+        Ok(parsed) => {
+            match serde_json::to_string_pretty(&parsed) {
+                Ok(formatted) => Ok(formatted),
+                Err(e) => Err(format!("Failed to format JSON: {}", e))
+            }
+        },
         Err(e) => {
             // Get line and column from serde_json::Error
             let line = e.line();
             let column = e.column();
-
             let lines: Vec<&str> = text.lines().collect();
             let error_line = lines.get(line.saturating_sub(1)).unwrap_or(&"");
 
-            let mut marker = String::new();
-            for _ in 0..column {
-                marker.push('-');
-            }
-            marker.push('^');
-
-            Err(format!(
-                "Parse error on line {} column {}:\n{}\n{}\n{}",
-                line,
-                column + 1,
-                error_line,
-                marker,
-                e
-            ))
+            // Check for common error patterns and provide user-friendly messages
+            let error_str = e.to_string();
+            let user_friendly_error = if error_str.contains("trailing characters") {
+                // This is likely JSONL/NDJSON format (multiple JSON objects on separate lines)
+                let total_lines = lines.len();
+                format!(
+                    "❌ Invalid JSON Format - Multiple JSON Objects Detected\n\n\
+                    Your file contains {} lines with separate JSON objects (JSONL/NDJSON format).\n\
+                    Standard JSON requires a single object or array.\n\n\
+                    To fix this, you have two options:\n\n\
+                    1. **Convert to JSON Array**: Wrap all objects in square brackets and separate with commas:\n\
+                       [\n         {{first object}},\n         {{second object}}\n       ]\n\n\
+                    2. **Process as JSONL**: Each line is a separate JSON object (not supported in JSON formatter)\n\n\
+                    Error details:\n\
+                    - Line {}: Found additional JSON object after the first one\n\
+                    - Total objects detected: {} lines\n\
+                    - First object ends at character position in line {}",
+                    total_lines, line, total_lines, line
+                )
+            } else if error_str.contains("expected") {
+                // Missing comma, bracket, etc.
+                let mut marker = String::new();
+                for _ in 0..column {
+                    marker.push('-');
+                }
+                marker.push('^');
+                
+                format!(
+                    "❌ JSON Syntax Error\n\n\
+                    There's a syntax error in your JSON at line {} column {}.\n\n\
+                    Error location:\n\
+                    {}\n\
+                    {}\n\n\
+                    Common fixes:\n\
+                    • Add missing comma between properties\n\
+                    • Check for unclosed brackets {{ }} or [ ]\n\
+                    • Ensure strings are properly quoted\n\
+                    • Remove trailing commas\n\n\
+                    Detailed error: {}",
+                    line, column + 1, error_line, marker, e
+                )
+            } else {
+                // Generic JSON error with helpful context and precise error location
+                let mut marker = String::new();
+                for _ in 0..column {
+                    marker.push('-');
+                }
+                marker.push('^');
+                
+                format!(
+                    "❌ JSON Parse Error\n\n\
+                    Invalid JSON format detected at line {} column {}.\n\n\
+                    Error location:\n\
+                    {}\n\
+                    {}\n\n\
+                    Please check:\n\
+                    • All strings are enclosed in double quotes\n\
+                    • Properties are separated by commas\n\
+                    • Objects are enclosed in {{ }}\n\
+                    • Arrays are enclosed in [ ]\n\
+                    • No trailing commas\n\n\
+                    Detailed error: {}\n\n\
+                    Raw parse error:\n\
+                    Parse error on line {} column {}:\n\
+                    {}\n\
+                    {}\n\
+                    {}",
+                    line, column + 1, error_line, marker, e,
+                    line, column + 1, error_line, marker, e
+                )
+            };
+            
+            Err(user_friendly_error)
         }
     }
 }
@@ -492,6 +545,13 @@ fn store_raw_content(content: String, state: State<AppState>) -> Result<(), Stri
 }
 
 #[tauri::command]
+fn store_formatted_content(content: String, state: State<AppState>) -> Result<(), String> {
+    let mut storage = state.lock().map_err(|e| e.to_string())?;
+    storage.formatted_content = Some(content);
+    Ok(())
+}
+
+#[tauri::command]
 fn get_content_chunk(
     content_type: String, // "raw" or "formatted"
     start: usize,
@@ -608,6 +668,7 @@ pub fn run() {
             greet,
             format_text,
             store_raw_content,
+            store_formatted_content,
             get_content_chunk,
             get_content_info,
             clear_content,

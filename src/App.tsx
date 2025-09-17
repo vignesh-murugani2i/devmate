@@ -36,13 +36,26 @@ function App() {
   };
 
   const formatText = async () => {
-    if (!inputText.trim() && !useChunkedLoading) return;
+    if (!inputText.trim() && !useChunkedLoading) {
+      setOutputText("Please enter some text to format or open a file.");
+      setHasError(true);
+      return;
+    }
 
+    // Set loading state first
     setIsLoading(true);
     setHasError(false);
+    setOutputText(""); // Clear previous output
     
-    // Add a small delay to ensure the loader shows before heavy processing
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Use requestAnimationFrame to ensure the loading state renders before heavy processing
+    await new Promise(resolve => {
+      requestAnimationFrame(() => {
+        // Double RAF to ensure the DOM update is painted
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 10); // Small additional delay to ensure smooth transition
+        });
+      });
+    });
     
     try {
       let textToFormat = inputText;
@@ -51,7 +64,7 @@ function App() {
       if (useChunkedLoading) {
         const info = await invoke("get_content_info") as any;
         if (!info.has_raw) {
-          throw new Error("No content available for formatting");
+          throw new Error("No content available for formatting. Please open a file first.");
         }
         // Backend will format the stored raw content
         textToFormat = ""; // Not used when backend has stored content
@@ -65,11 +78,48 @@ function App() {
       if (useChunkedLoading) {
         // Reset the chunked output component to load formatted content
         setChunkedOutputKey(prev => prev + 1);
+        setHasError(false);
       } else {
         setOutputText(formatted as string);
+        setHasError(false);
       }
     } catch (error) {
-      setOutputText(`Error: ${error}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Show user-friendly error messages
+      let friendlyError = "";
+      
+      if (errorMessage.includes("Parse error")) {
+        // JSON parse errors are already well formatted from the backend
+        friendlyError = errorMessage;
+      } else if (errorMessage.includes("Invalid JSON")) {
+        friendlyError = "❌ Invalid JSON Format\n\nThe input is not valid JSON. Please check:\n• Missing quotes around strings\n• Trailing commas\n• Unclosed brackets or braces\n• Invalid escape sequences";
+      } else if (errorMessage.includes("Invalid XML")) {
+        friendlyError = "❌ Invalid XML Format\n\nThe input is not valid XML. Please check:\n• All tags are properly closed\n• No unclosed brackets\n• Proper nesting of elements";
+      } else if (errorMessage.includes("Invalid JWT")) {
+        friendlyError = "❌ Invalid JWT Token\n\nThe input is not a valid JWT token. Please check:\n• Token has 3 parts separated by dots\n• Each part is properly base64 encoded\n• No extra spaces or characters";
+      } else if (errorMessage.includes("Invalid base64")) {
+        friendlyError = "❌ Invalid Base64 Encoding\n\nThe input contains invalid base64 characters. Please check:\n• Only use A-Z, a-z, 0-9, +, /, and = characters\n• Remove any spaces or line breaks\n• Ensure proper padding with = characters";
+      } else if (errorMessage.includes("No content available")) {
+        friendlyError = "❌ No Content Available\n\nPlease open a file or enter some text in the input area before formatting.";
+      } else {
+        friendlyError = `❌ Formatting Error\n\n${errorMessage}\n\nPlease check your input and try again.`;
+      }
+      
+      if (useChunkedLoading) {
+        // For chunked loading, store the error message in formatted content and update chunked component
+        try {
+          await invoke("store_formatted_content", { content: friendlyError });
+          setChunkedOutputKey(prev => prev + 1);
+        } catch (storeError) {
+          console.error("Failed to store error in backend:", storeError);
+          // Fallback to regular display
+          setOutputText(friendlyError);
+        }
+      } else {
+        setOutputText(friendlyError);
+      }
+      
       setHasError(true);
     } finally {
       setIsLoading(false);
@@ -191,8 +241,15 @@ function App() {
           setHasError(false);
           setBase64Error("");
         } catch (error) {
-          // If decode fails, show error message
-          setOutputText("");
+          // If decode fails, show user-friendly error message
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          let friendlyError = "❌ Invalid Base64 Input\n\nThe input contains invalid base64 characters. Please check:\n• Only use A-Z, a-z, 0-9, +, /, and = characters\n• Remove any spaces or line breaks\n• Ensure proper padding with = characters";
+          
+          if (errorMessage.includes("Invalid UTF-8")) {
+            friendlyError = "❌ Invalid UTF-8 Content\n\nThe decoded base64 content is not valid UTF-8 text. This might be binary data that cannot be displayed as text.";
+          }
+          
+          setOutputText(friendlyError);
           setHasError(true);
           setBase64Error("Invalid Base64 string");
         }
@@ -221,6 +278,7 @@ function App() {
           setBase64Error("");
         } catch (error) {
           // If encode fails, clear input but don't show error for partial typing
+          // (Base64 encoding should rarely fail for valid text input)
           setInputText("");
           setHasError(false);
           setBase64Error("");
